@@ -83,7 +83,7 @@ func TestClusterStrategy(t *testing.T) {
 	cluster := validNewCluster()
 	Strategy.PrepareForCreate(cluster)
 	if len(cluster.Status.Conditions) != 0 {
-		t.Errorf("Cluster should not allow setting phase on create")
+		t.Errorf("Cluster should not allow setting conditions on create")
 	}
 	errs := Strategy.Validate(ctx, cluster)
 	if len(errs) != 0 {
