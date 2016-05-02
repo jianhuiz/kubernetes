@@ -104,7 +104,7 @@ func autoConvert_v1alpha1_ClusterCondition_To_federation_ClusterCondition(in *Cl
 	}
 	out.Type = federation.ClusterConditionType(in.Type)
 	out.Status = api.ConditionStatus(in.Status)
-	if err := api.Convert_unversioned_Time_To_unversioned_Time(&in.LastProbeTime, &out.LastProbeTime, s); err != nil {
+	if err := api.Convert_unversioned_Time_To_unversioned_Time(&in.LastUpdateTime, &out.LastUpdateTime, s); err != nil {
 		return err
 	}
 	if err := api.Convert_unversioned_Time_To_unversioned_Time(&in.LastTransitionTime, &out.LastTransitionTime, s); err != nil {
@@ -125,7 +125,7 @@ func autoConvert_federation_ClusterCondition_To_v1alpha1_ClusterCondition(in *fe
 	}
 	out.Type = ClusterConditionType(in.Type)
 	out.Status = v1.ConditionStatus(in.Status)
-	if err := api.Convert_unversioned_Time_To_unversioned_Time(&in.LastProbeTime, &out.LastProbeTime, s); err != nil {
+	if err := api.Convert_unversioned_Time_To_unversioned_Time(&in.LastUpdateTime, &out.LastUpdateTime, s); err != nil {
 		return err
 	}
 	if err := api.Convert_unversioned_Time_To_unversioned_Time(&in.LastTransitionTime, &out.LastTransitionTime, s); err != nil {

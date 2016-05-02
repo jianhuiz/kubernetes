@@ -149,8 +149,8 @@ func (m *ClusterCondition) MarshalTo(data []byte) (int, error) {
 	i += copy(data[i:], m.Status)
 	data[i] = 0x1a
 	i++
-	i = encodeVarintGenerated(data, i, uint64(m.LastProbeTime.Size()))
-	n4, err := m.LastProbeTime.MarshalTo(data[i:])
+	i = encodeVarintGenerated(data, i, uint64(m.LastUpdateTime.Size()))
+	n4, err := m.LastUpdateTime.MarshalTo(data[i:])
 	if err != nil {
 		return 0, err
 	}
@@ -396,7 +396,7 @@ func (m *ClusterCondition) Size() (n int) {
 	n += 1 + l + sovGenerated(uint64(l))
 	l = len(m.Status)
 	n += 1 + l + sovGenerated(uint64(l))
-	l = m.LastProbeTime.Size()
+	l = m.LastUpdateTime.Size()
 	n += 1 + l + sovGenerated(uint64(l))
 	l = m.LastTransitionTime.Size()
 	n += 1 + l + sovGenerated(uint64(l))
@@ -717,7 +717,7 @@ func (m *ClusterCondition) Unmarshal(data []byte) error {
 			iNdEx = postIndex
 		case 3:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field LastProbeTime", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field LastUpdateTime", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -741,7 +741,7 @@ func (m *ClusterCondition) Unmarshal(data []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if err := m.LastProbeTime.Unmarshal(data[iNdEx:postIndex]); err != nil {
+			if err := m.LastUpdateTime.Unmarshal(data[iNdEx:postIndex]); err != nil {
 				return err
 			}
 			iNdEx = postIndex

@@ -60,7 +60,7 @@ func DeepCopy_federation_Cluster(in Cluster, out *Cluster, c *conversion.Cloner)
 func DeepCopy_federation_ClusterCondition(in ClusterCondition, out *ClusterCondition, c *conversion.Cloner) error {
 	out.Type = in.Type
 	out.Status = in.Status
-	if err := unversioned.DeepCopy_unversioned_Time(in.LastProbeTime, &out.LastProbeTime, c); err != nil {
+	if err := unversioned.DeepCopy_unversioned_Time(in.LastUpdateTime, &out.LastUpdateTime, c); err != nil {
 		return err
 	}
 	if err := unversioned.DeepCopy_unversioned_Time(in.LastTransitionTime, &out.LastTransitionTime, c); err != nil {
