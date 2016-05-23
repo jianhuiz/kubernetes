@@ -18,8 +18,8 @@ package schedulercache
 
 import (
 	"fmt"
-	"time"
 	"sync"
+	"time"
 
 	"k8s.io/kubernetes/pkg/util/wait"
 
@@ -31,6 +31,7 @@ import (
 var (
 	cleanAssumedPeriod = 1 * time.Second
 )
+
 // New returns a Cache implementation.
 // It automatically starts a go routine that manages expiration of assumed replicaSets.
 // "ttl" is how long the assumed replicaSet will get expired.
@@ -42,22 +43,22 @@ func New(ttl time.Duration, stop chan struct{}) Cache {
 }
 
 type schedulerCache struct {
-	stop         chan struct{}
-	ttl          time.Duration
-	period       time.Duration
+	stop   chan struct{}
+	ttl    time.Duration
+	period time.Duration
 
 	// This mutex guards all fields within this cache struct.
-	mu           sync.Mutex
+	mu sync.Mutex
 	// a set of assumed replicaSet keys.
 	// The key could further be used to get an entry in replicaSetStates.
 	assumedReplicaSet map[string]bool
 	// a map from replicaSet key to replicaSetState.
-	replicaSetStates  map[string]*replicaSetState
-	clusters     map[string]*ClusterInfo
+	replicaSetStates map[string]*replicaSetState
+	clusters         map[string]*ClusterInfo
 }
 
 type replicaSetState struct {
-	replicaSet    *v1beta1.ReplicaSet
+	replicaSet *v1beta1.ReplicaSet
 	// Used by assumedReplicaSet to determinate expiration.
 	deadline *time.Time
 }
@@ -68,9 +69,9 @@ func newSchedulerCache(ttl, period time.Duration, stop chan struct{}) *scheduler
 		period: period,
 		stop:   stop,
 
-		clusters:       make(map[string]*ClusterInfo),
+		clusters:          make(map[string]*ClusterInfo),
 		assumedReplicaSet: make(map[string]bool),
-		replicaSetStates:   make(map[string]*replicaSetState),
+		replicaSetStates:  make(map[string]*replicaSetState),
 	}
 }
 
@@ -103,7 +104,7 @@ func (cache *schedulerCache) assumeReplicaSet(replicaSet *v1beta1.ReplicaSet, no
 	dl := now.Add(cache.ttl)
 	rss := &replicaSetState{
 		replicaSet: replicaSet,
-		deadline: &dl,
+		deadline:   &dl,
 	}
 	cache.replicaSetStates[key] = rss
 	cache.assumedReplicaSet[key] = true
@@ -267,7 +268,7 @@ func (cache *schedulerCache) List() ([]*v1beta1.ReplicaSet, error) {
 	var result []*v1beta1.ReplicaSet
 	for _, info := range cache.clusters {
 		for _, rs := range info.replicaSets {
-				result = append(result, rs)
+			result = append(result, rs)
 		}
 	}
 	return result, nil

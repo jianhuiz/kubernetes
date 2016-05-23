@@ -17,12 +17,12 @@ limitations under the License.
 package latest
 
 import (
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
+	_ "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/v1"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/runtime/serializer/json"
 	"k8s.io/kubernetes/pkg/runtime/serializer/versioning"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
-	_ "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/v1"
 )
 
 // Version is the string that represents the current external default version.

@@ -21,13 +21,13 @@ import (
 
 	"k8s.io/kubernetes/pkg/api/v1"
 
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/pkg/client/record"
-	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/metrics"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/client/record"
+	"k8s.io/kubernetes/pkg/util/wait"
 
 	"github.com/golang/glog"
 )
@@ -59,10 +59,10 @@ type Config struct {
 
 	// Error is called if there is an error. It is passed the replicaSet in
 	// question, and the error
-	Error          func(*extensions.ReplicaSet, error)
+	Error func(*extensions.ReplicaSet, error)
 
 	// Recorder is the EventRecorder to use
-	Recorder       record.EventRecorder
+	Recorder record.EventRecorder
 
 	// Close this to shut down the federated-scheduler.
 	StopEverything chan struct{}
@@ -123,7 +123,7 @@ func (s *Scheduler) scheduleOne() {
 }
 
 //check if the rs has been scheduled, as we do not change the rs after schedule, so we need to iterate rs in cache
-func IsScheduled(rs *extensions.ReplicaSet) (bool){
+func IsScheduled(rs *extensions.ReplicaSet) bool {
 	clusterSelection, ok := rs.Annotations[unversioned.TargetClusterKey]
 	if ok && clusterSelection != "" {
 		return true

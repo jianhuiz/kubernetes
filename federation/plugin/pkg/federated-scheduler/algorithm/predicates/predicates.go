@@ -20,21 +20,20 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"github.com/golang/glog"
+	"k8s.io/kubernetes/federation/apis/federation/unversioned"
 	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
-	"k8s.io/kubernetes/pkg/client/cache"
 	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	"github.com/golang/glog"
+	"k8s.io/kubernetes/pkg/api/v1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/client/cache"
 )
 
 type ClusterInfo interface {
 	GetClusterInfo(clusterName string) (*federation.Cluster, error)
 }
-
 
 type StaticClusterInfo struct {
 	*federation.ClusterList
@@ -60,6 +59,7 @@ func (clusters ClientClusterInfo) GetClusterInfo(clusterName string) (*federatio
 type CachedClusterInfo struct {
 	*cache.StoreToClusterLister
 }
+
 // GetClusterInfo returns cached data for the cluster 'id'.
 func (c *CachedClusterInfo) GetClusterInfo(id string) (*federation.Cluster, error) {
 	cluster, exists, err := c.Get(&federation.Cluster{ObjectMeta: v1.ObjectMeta{Name: id}})
@@ -109,7 +109,7 @@ type ClusterSelector struct {
 //		name: nginx-controller
 //	annotations:
 //		ubernetes.kubernetes.io/cluster-name: Foo, Bar
-func parseClusterSelectorAnnotation(selectorAnnotationString string) ([]string){
+func parseClusterSelectorAnnotation(selectorAnnotationString string) []string {
 	//assume ube-apiserver covers the validation, and the value should be a string of "Foo, Bar"
 	targets := strings.Split(selectorAnnotationString, ",")
 	results := []string{}
@@ -122,7 +122,7 @@ func parseClusterSelectorAnnotation(selectorAnnotationString string) ([]string){
 func (c *ClusterSelector) RSAnnotationMatches(rs *extensions.ReplicaSet, clusterName string, clusterInfo *schedulercache.ClusterInfo) (bool, error) {
 	cluster, err := c.info.GetClusterInfo(clusterName)
 	if err != nil {
-	   return false, err
+		return false, err
 	}
-   return rsMatchesClusterName(rs, cluster), nil
+	return rsMatchesClusterName(rs, cluster), nil
 }

@@ -27,6 +27,12 @@ import (
 	"strconv"
 
 	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
+	"k8s.io/kubernetes/federation/plugin/cmd/federated-scheduler/app/options"
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
+	_ "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithmprovider"
+	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
+	latestschedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/latest"
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/factory"
 	"k8s.io/kubernetes/pkg/api"
 	kubeclient "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
 	"k8s.io/kubernetes/pkg/client/record"
@@ -34,12 +40,6 @@ import (
 	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/configz"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
-	"k8s.io/kubernetes/federation/plugin/cmd/federated-scheduler/app/options"
-	_ "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithmprovider"
-	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
-	latestschedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/latest"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/factory"
 
 	"github.com/golang/glog"
 	"github.com/prometheus/client_golang/prometheus"
@@ -82,7 +82,7 @@ func Run(s *options.SchedulerServer) error {
 	kubeconfig.ContentType = s.ContentType
 	// Override kubeconfig qps/burst settings from flags
 	kubeconfig.QPS = s.KubeAPIQPS
-	kubeconfig.Burst = s.KubeAPIBurst
+	kubeconfig.Burst = int(s.KubeAPIBurst)
 	federatedClientSet := fedclientset.NewForConfigOrDie(kubeconfig)
 	kubeClientSet := kubeclient.NewForConfigOrDie(kubeconfig)
 
@@ -98,7 +98,7 @@ func Run(s *options.SchedulerServer) error {
 		mux.Handle("/metrics", prometheus.Handler())
 
 		server := &http.Server{
-			Addr:    net.JoinHostPort(s.Address, strconv.Itoa(s.Port)),
+			Addr:    net.JoinHostPort(s.Address, strconv.Itoa(int(s.Port))),
 			Handler: mux,
 		}
 		glog.Fatal(server.ListenAndServe())

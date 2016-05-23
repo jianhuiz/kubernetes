@@ -19,12 +19,12 @@ package main
 import (
 	"runtime"
 
+	"k8s.io/kubernetes/federation/plugin/cmd/federated-scheduler/app"
+	"k8s.io/kubernetes/federation/plugin/cmd/federated-scheduler/app/options"
 	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/flag"
 	"k8s.io/kubernetes/pkg/version/verflag"
-	"k8s.io/kubernetes/federation/plugin/cmd/federated-scheduler/app"
-	"k8s.io/kubernetes/federation/plugin/cmd/federated-scheduler/app/options"
 
 	"github.com/spf13/pflag"
 )

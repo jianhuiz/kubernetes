@@ -17,10 +17,10 @@ limitations under the License.
 package priorities
 
 import (
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 
 	"math/rand"
 )
@@ -49,8 +49,8 @@ func (c *ClusterRandom) CalculateRandomPriority(rc *extensions.ReplicaSet, clust
 	cluster := clusters.Items[index]
 	list = append(list,
 		schedulerapi.ClusterPriority{
-			Cluster:  cluster.Name,
-			Score: chosenPriority,
+			Cluster: cluster.Name,
+			Score:   chosenPriority,
 		},
 	)
 	return list, nil

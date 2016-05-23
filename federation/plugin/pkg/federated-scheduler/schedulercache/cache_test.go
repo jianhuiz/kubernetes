@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/kubernetes/federation/apis/federation/unversioned"
 	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/federation/apis/federation/unversioned"
 )
 
 // TestAssumeReplicaSetScheduled tests that after a replicaSet is assumed, its information is aggregated
@@ -83,7 +83,7 @@ func TestExpireReplicaSet(t *testing.T) {
 	now := time.Now()
 	ttl := 10 * time.Second
 	tests := []struct {
-		replicaSets      []*testExpireReplicaSetStruct
+		replicaSets []*testExpireReplicaSetStruct
 		cleanupTime time.Time
 
 		clusterInfo *ClusterInfo
@@ -92,7 +92,7 @@ func TestExpireReplicaSet(t *testing.T) {
 			{rs: testReplicaSets[0], assumedTime: now},
 		},
 		cleanupTime: now.Add(2 * ttl),
-		clusterInfo:   nil,
+		clusterInfo: nil,
 	}, { // first one would expire, second one would not.
 		replicaSets: []*testExpireReplicaSetStruct{
 			{rs: testReplicaSets[0], assumedTime: now},
@@ -136,7 +136,7 @@ func TestAddReplicaSetWillConfirm(t *testing.T) {
 		replicaSetsToAssume []*v1beta1.ReplicaSet
 		replicaSetsToAdd    []*v1beta1.ReplicaSet
 
-		clusterInfo         *ClusterInfo
+		clusterInfo *ClusterInfo
 	}{{ // two replicaSet were assumed at same time. But first one is called Add() and gets confirmed.
 		replicaSetsToAssume: []*v1beta1.ReplicaSet{testReplicaSets[0], testReplicaSets[1]},
 		replicaSetsToAdd:    []*v1beta1.ReplicaSet{testReplicaSets[0]},
@@ -172,7 +172,7 @@ func TestAddReplicaSetAfterExpiration(t *testing.T) {
 	ttl := 10 * time.Second
 	baseReplicaSet := makeBaseReplicaSet(clusterName, "test")
 	tests := []struct {
-		replicaSet       *v1beta1.ReplicaSet
+		replicaSet *v1beta1.ReplicaSet
 
 		clusterInfo *ClusterInfo
 	}{{
@@ -218,7 +218,7 @@ func TestUpdateReplicaSet(t *testing.T) {
 		replicaSetsToAdd    []*v1beta1.ReplicaSet
 		replicaSetsToUpdate []*v1beta1.ReplicaSet
 
-		clusterInfo    []*ClusterInfo
+		clusterInfo []*ClusterInfo
 	}{{ // add a replicaSet and then update it twice
 		replicaSetsToAdd:    []*v1beta1.ReplicaSet{testReplicaSets[0]},
 		replicaSetsToUpdate: []*v1beta1.ReplicaSet{testReplicaSets[0], testReplicaSets[1], testReplicaSets[0]},
@@ -266,7 +266,7 @@ func TestExpireAddUpdateReplicaSet(t *testing.T) {
 		replicaSetsToAdd    []*v1beta1.ReplicaSet
 		replicaSetsToUpdate []*v1beta1.ReplicaSet
 
-		clusterInfo    []*ClusterInfo
+		clusterInfo []*ClusterInfo
 	}{{ // ReplicaSet is assumed, expired, and added. Then it would be updated twice.
 		replicaSetsToAssume: []*v1beta1.ReplicaSet{testReplicaSets[0]},
 		replicaSetsToAdd:    []*v1beta1.ReplicaSet{testReplicaSets[0]},
@@ -315,7 +315,7 @@ func TestRemoveReplicaSet(t *testing.T) {
 	clusterName := "cluster"
 	baseReplicaSet := makeBaseReplicaSet(clusterName, "test")
 	tests := []struct {
-		replicaSet       *v1beta1.ReplicaSet
+		replicaSet *v1beta1.ReplicaSet
 
 		clusterInfo *ClusterInfo
 	}{{
@@ -389,8 +389,8 @@ func makeBaseReplicaSet(clusterName, objName string) *v1beta1.ReplicaSet {
 	annotations[unversioned.TargetClusterKey] = clusterName
 	return &v1beta1.ReplicaSet{
 		ObjectMeta: v1.ObjectMeta{
-			Namespace: "cluster_info_cache_test",
-			Name:      objName,
+			Namespace:   "cluster_info_cache_test",
+			Name:        objName,
 			Annotations: annotations,
 		},
 	}

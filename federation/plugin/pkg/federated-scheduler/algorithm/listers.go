@@ -17,8 +17,8 @@ limitations under the License.
 package algorithm
 
 import (
-	"k8s.io/kubernetes/pkg/apis/extensions"
 	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	"k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 var _ ReplicaSetLister = &EmptyReplicaSetLister{}

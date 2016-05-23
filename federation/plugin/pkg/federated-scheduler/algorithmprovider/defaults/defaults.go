@@ -18,11 +18,11 @@ limitations under the License.
 package defaults
 
 import (
-	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm/predicates"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm/priorities"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/factory"
+	"k8s.io/kubernetes/pkg/util/sets"
 )
 
 func init() {

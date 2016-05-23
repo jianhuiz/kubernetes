@@ -55,7 +55,6 @@ import (
 //   a replicaSet might have changed its state (e.g. added and deleted) without delivering notification to the cache.
 type Cache interface {
 
-
 	// AssumeSubRSIfBindSucceed assumes a replicaSet to be scheduled if binding the replicaSet succeeded.
 	// If binding return true, the replicaSet's information is aggregated into designated cluster.
 	// Note that both binding and assuming are done as one atomic operation from cache's view.

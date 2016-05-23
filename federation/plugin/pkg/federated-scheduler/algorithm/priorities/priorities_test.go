@@ -13,31 +13,31 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 //TODO: to be changed later
 package priorities
 
 import (
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/conversion"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
 	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
 	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/conversion"
 )
 
 func makeCluster(Cluster string) federation.Cluster {
 	return federation.Cluster{
 		ObjectMeta: v1.ObjectMeta{Name: Cluster},
-		Status: federation.ClusterStatus{
-		},
+		Status:     federation.ClusterStatus{},
 	}
 }
 
-func getAssumedSubRS(replicaSets []*extensions.ReplicaSet) ([]*federation.SubReplicaSet) {
+func getAssumedSubRS(replicaSets []*extensions.ReplicaSet) []*federation.SubReplicaSet {
 
 	result := []*federation.SubReplicaSet{}
 	for _, rs := range replicaSets {
@@ -70,18 +70,18 @@ func TestRandomChoosePriority(t *testing.T) {
 		},
 	}
 	tests := []struct {
-		replicaSet   *extensions.ReplicaSet
-		replicaSets  []*extensions.ReplicaSet
-		Clusters []federation.Cluster
-		test  string
+		replicaSet  *extensions.ReplicaSet
+		replicaSets []*extensions.ReplicaSet
+		Clusters    []federation.Cluster
+		test        string
 	}{
 		// The point of these next two tests is to show you get the same priority for a zero-request replicaSet
 		// as for a replicaSet with the defaults requests, both when the zero-request replicaSet is already on the cluster
 		// and when the zero-request replicaSet is the one being scheduled.
 		{
-			replicaSet:   &extensions.ReplicaSet{Spec: replicaSet},
-			Clusters: []federation.Cluster{makeCluster("cluster1"), makeCluster("cluster2")},
-			test:  "test priority of random choose",
+			replicaSet: &extensions.ReplicaSet{Spec: replicaSet},
+			Clusters:   []federation.Cluster{makeCluster("cluster1"), makeCluster("cluster2")},
+			test:       "test priority of random choose",
 			replicaSets: []*extensions.ReplicaSet{
 				{Spec: replicaSet},
 			},

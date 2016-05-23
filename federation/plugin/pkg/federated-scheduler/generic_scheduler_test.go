@@ -20,13 +20,13 @@ import (
 	"math/rand"
 	"testing"
 
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/pkg/util/sets"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
 	schedulertesting "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/testing"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/util/sets"
 )
 
 func falsePredicate(replicaSet *extensions.ReplicaSet, clusterName string, clusterInfo *schedulercache.ClusterInfo) (bool, error) {
@@ -50,9 +50,9 @@ func makeClusterList(clusterNames []string) federation.ClusterList {
 func TestSelectCluster(t *testing.T) {
 	scheduler := genericScheduler{random: rand.New(rand.NewSource(0))}
 	tests := []struct {
-		list          schedulerapi.ClusterPriorityList
+		list             schedulerapi.ClusterPriorityList
 		possibleClusters sets.String
-		expectsErr    bool
+		expectsErr       bool
 	}{
 		{
 			list: []schedulerapi.ClusterPriority{
@@ -60,7 +60,7 @@ func TestSelectCluster(t *testing.T) {
 				{Cluster: "cluster2.1", Score: 2},
 			},
 			possibleClusters: sets.NewString("cluster2.1"),
-			expectsErr:    false,
+			expectsErr:       false,
 		},
 		// equal scores
 		{
@@ -71,7 +71,7 @@ func TestSelectCluster(t *testing.T) {
 				{Cluster: "cluster2.1", Score: 2},
 			},
 			possibleClusters: sets.NewString("cluster1.2", "cluster1.3", "cluster2.1"),
-			expectsErr:    false,
+			expectsErr:       false,
 		},
 		// out of order scores
 		{
@@ -83,13 +83,13 @@ func TestSelectCluster(t *testing.T) {
 				{Cluster: "cluster1.3", Score: 3},
 			},
 			possibleClusters: sets.NewString("cluster1.1", "cluster1.2", "cluster1.3"),
-			expectsErr:    false,
+			expectsErr:       false,
 		},
 		// empty priorityList
 		{
-			list:          []schedulerapi.ClusterPriority{},
+			list:             []schedulerapi.ClusterPriority{},
 			possibleClusters: sets.NewString(),
-			expectsErr:    true,
+			expectsErr:       true,
 		},
 	}
 
@@ -115,28 +115,28 @@ func TestSelectCluster(t *testing.T) {
 
 func TestGenericScheduler(t *testing.T) {
 	tests := []struct {
-		name          string
-		predicates    map[string]algorithm.FitPredicate
-		prioritizers  []algorithm.PriorityConfig
+		name             string
+		predicates       map[string]algorithm.FitPredicate
+		prioritizers     []algorithm.PriorityConfig
 		clusters         []string
-		replicaSet           *extensions.ReplicaSet
-		replicaSets          []*extensions.ReplicaSet
+		replicaSet       *extensions.ReplicaSet
+		replicaSets      []*extensions.ReplicaSet
 		expectedClusters sets.String
-		expectsErr    bool
+		expectsErr       bool
 	}{
 		{
 			predicates:   map[string]algorithm.FitPredicate{"false": falsePredicate},
 			prioritizers: []algorithm.PriorityConfig{{Function: EqualPriority, Weight: 1}},
-			clusters:        []string{"cluster1", "cluster2"},
+			clusters:     []string{"cluster1", "cluster2"},
 			expectsErr:   true,
 			name:         "test 1",
 		},
 		{
-			predicates:    map[string]algorithm.FitPredicate{"true": truePredicate},
-			prioritizers:  []algorithm.PriorityConfig{{Function: EqualPriority, Weight: 1}},
+			predicates:       map[string]algorithm.FitPredicate{"true": truePredicate},
+			prioritizers:     []algorithm.PriorityConfig{{Function: EqualPriority, Weight: 1}},
 			clusters:         []string{"cluster1", "cluster2"},
 			expectedClusters: sets.NewString("cluster1", "cluster2"),
-			name:          "test 2",
+			name:             "test 2",
 		},
 	}
 

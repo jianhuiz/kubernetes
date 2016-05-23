@@ -23,24 +23,24 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/kubernetes/federation/apis/federation/unversioned"
+	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
+	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
+	latestschedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/latest"
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	apiunversioned "k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/api/v1"
 	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 	"k8s.io/kubernetes/pkg/client/cache"
-	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
 	kubeclientset "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
 	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/types"
 	utiltesting "k8s.io/kubernetes/pkg/util/testing"
-	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
-	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
-	latestschedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/latest"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
 )
 
 func TestCreate(t *testing.T) {
@@ -144,12 +144,12 @@ func PriorityTwo(replicaSet *extensions.ReplicaSet, clusterNameToInfo map[string
 
 func TestDefaultErrorFunc(t *testing.T) {
 	testReplicaSet := &extensions.ReplicaSet{
-		TypeMeta: apiunversioned.TypeMeta {
-			Kind: "ReplicaSet",
+		TypeMeta: apiunversioned.TypeMeta{
+			Kind:       "ReplicaSet",
 			APIVersion: "extensions/v1beta1",
 		},
-		ObjectMeta: v1.ObjectMeta {
-			Name: "foo",
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "foo",
 			Namespace: "bar",
 		},
 	}
@@ -173,7 +173,7 @@ func TestDefaultErrorFunc(t *testing.T) {
 	queue := cache.NewFIFO(cache.MetaNamespaceKeyFunc)
 
 	replicaSetBackoff := rsBackoff{
-		perRsBackoff:   map[types.NamespacedName]*backoffEntry{},
+		perRsBackoff:    map[types.NamespacedName]*backoffEntry{},
 		clock:           &fakeClock{},
 		defaultDuration: 1 * time.Millisecond,
 		maxDuration:     1 * time.Second,
@@ -236,13 +236,13 @@ func TestBind(t *testing.T) {
 	}{
 		{binding: &extensions.ReplicaSet{
 			TypeMeta: apiunversioned.TypeMeta{
-				Kind:"SubReplicaSet",
-				APIVersion:"federation/v1alpha1",
+				Kind:       "ReplicaSet",
+				APIVersion: "extensions/v1beta1",
 			},
-			ObjectMeta: v1.ObjectMeta {
-				Name: "rs-foo",
+			ObjectMeta: v1.ObjectMeta{
+				Name:         "rs-foo",
 				GenerateName: "rs-foo",
-				Namespace: "bar",
+				Namespace:    "bar",
 			},
 			Spec: extensions.ReplicaSetSpec{
 				Template: v1.PodTemplateSpec{
@@ -269,7 +269,7 @@ func TestBind(t *testing.T) {
 		kubeconfig := restclient.Config{Host: server.URL, ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Extensions.GroupVersion()}}
 		federatedClientSet := fedclientset.NewForConfigOrDie(&federatedconfig)
 		kubeClientSet := kubeclientset.NewForConfigOrDie(&kubeconfig)
-		b := binder{federatedClientSet,kubeClientSet}
+		b := binder{federatedClientSet, kubeClientSet}
 
 		item.binding.Annotations = map[string]string{}
 		item.binding.Annotations[unversioned.TargetClusterKey] = "foo"
@@ -291,37 +291,37 @@ func TestBind(t *testing.T) {
 func TestBackoff(t *testing.T) {
 	clock := fakeClock{}
 	backoff := rsBackoff{
-		perRsBackoff:   map[types.NamespacedName]*backoffEntry{},
+		perRsBackoff:    map[types.NamespacedName]*backoffEntry{},
 		clock:           &clock,
 		defaultDuration: 1 * time.Second,
 		maxDuration:     60 * time.Second,
 	}
 
 	tests := []struct {
-		replicaSetID            types.NamespacedName
+		replicaSetID     types.NamespacedName
 		expectedDuration time.Duration
 		advanceClock     time.Duration
 	}{
 		{
-			replicaSetID:            types.NamespacedName{Namespace: "default", Name: "foo"},
+			replicaSetID:     types.NamespacedName{Namespace: "default", Name: "foo"},
 			expectedDuration: 1 * time.Second,
 		},
 		{
-			replicaSetID:            types.NamespacedName{Namespace: "default", Name: "foo"},
+			replicaSetID:     types.NamespacedName{Namespace: "default", Name: "foo"},
 			expectedDuration: 2 * time.Second,
 		},
 		{
-			replicaSetID:            types.NamespacedName{Namespace: "default", Name: "foo"},
+			replicaSetID:     types.NamespacedName{Namespace: "default", Name: "foo"},
 			expectedDuration: 4 * time.Second,
 		},
 		{
-			replicaSetID:            types.NamespacedName{Namespace: "default", Name: "bar"},
+			replicaSetID:     types.NamespacedName{Namespace: "default", Name: "bar"},
 			expectedDuration: 1 * time.Second,
 			advanceClock:     120 * time.Second,
 		},
 		// 'foo' should have been gc'd here.
 		{
-			replicaSetID:            types.NamespacedName{Namespace: "default", Name: "foo"},
+			replicaSetID:     types.NamespacedName{Namespace: "default", Name: "foo"},
 			expectedDuration: 1 * time.Second,
 		},
 	}

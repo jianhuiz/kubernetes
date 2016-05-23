@@ -24,13 +24,13 @@ import (
 	"strings"
 	"sync"
 
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/pkg/util/errors"
-	"k8s.io/kubernetes/pkg/util/sets"
+	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/util/errors"
+	"k8s.io/kubernetes/pkg/util/sets"
 
 	"github.com/golang/glog"
 )
@@ -89,7 +89,7 @@ func (g *genericScheduler) Schedule(rc *extensions.ReplicaSet, clusterLister alg
 
 	if len(filteredClusters.Items) == 0 {
 		return "", &FitError{
-			Rc:              rc,
+			Rc:               rc,
 			FailedPredicates: failedPredicateMap,
 		}
 	}
@@ -229,8 +229,8 @@ func EqualPriority(_ *extensions.ReplicaSet, clusterNameToInfo map[string]*sched
 	result := []schedulerapi.ClusterPriority{}
 	for _, cluster := range clusters.Items {
 		result = append(result, schedulerapi.ClusterPriority{
-			Cluster:  cluster.Name,
-			Score: 1,
+			Cluster: cluster.Name,
+			Score:   1,
 		})
 	}
 	return result, nil
