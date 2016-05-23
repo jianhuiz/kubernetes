@@ -30,6 +30,10 @@ func (c *FakeFederation) Clusters() v1alpha1.ClusterInterface {
 	return &FakeClusters{c}
 }
 
+func (c *FakeFederation) SubReplicaSets(namespace string) v1alpha1.SubReplicaSetInterface {
+	return &FakeSubReplicaSets{c, namespace}
+}
+
 // GetRESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
 func (c *FakeFederation) GetRESTClient() *restclient.RESTClient {

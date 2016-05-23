@@ -25,6 +25,7 @@ import (
 type FederationInterface interface {
 	GetRESTClient() *restclient.RESTClient
 	ClustersGetter
+	SubReplicaSetsGetter
 }
 
 // FederationClient is used to interact with features provided by the Federation group.
@@ -34,6 +35,10 @@ type FederationClient struct {
 
 func (c *FederationClient) Clusters() ClusterInterface {
 	return newClusters(c)
+}
+
+func (c *FederationClient) SubReplicaSets(namespace string) SubReplicaSetInterface {
+	return newSubReplicaSets(c, namespace)
 }
 
 // NewForConfig creates a new FederationClient for the given config.

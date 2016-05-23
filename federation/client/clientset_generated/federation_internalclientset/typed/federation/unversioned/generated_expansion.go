@@ -17,3 +17,5 @@ limitations under the License.
 package unversioned
 
 type ClusterExpansion interface{}
+
+type SubReplicaSetExpansion interface{}

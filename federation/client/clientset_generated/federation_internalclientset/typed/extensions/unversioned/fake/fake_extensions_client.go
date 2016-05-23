@@ -17,25 +17,21 @@ limitations under the License.
 package fake
 
 import (
-	unversioned "k8s.io/kubernetes/federation/client/clientset_generated/federation_internalclientset/typed/federation/unversioned"
+	unversioned "k8s.io/kubernetes/federation/client/clientset_generated/federation_internalclientset/typed/extensions/unversioned"
 	restclient "k8s.io/kubernetes/pkg/client/restclient"
 	core "k8s.io/kubernetes/pkg/client/testing/core"
 )
 
-type FakeFederation struct {
+type FakeExtensions struct {
 	*core.Fake
 }
 
-func (c *FakeFederation) Clusters() unversioned.ClusterInterface {
-	return &FakeClusters{c}
-}
-
-func (c *FakeFederation) SubReplicaSets(namespace string) unversioned.SubReplicaSetInterface {
-	return &FakeSubReplicaSets{c, namespace}
+func (c *FakeExtensions) ReplicaSets(namespace string) unversioned.ReplicaSetInterface {
+	return &FakeReplicaSets{c, namespace}
 }
 
 // GetRESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
-func (c *FakeFederation) GetRESTClient() *restclient.RESTClient {
+func (c *FakeExtensions) GetRESTClient() *restclient.RESTClient {
 	return nil
 }
