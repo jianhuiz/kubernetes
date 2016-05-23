@@ -25,30 +25,30 @@ import (
 	"sync/atomic"
 	"time"
 
-	fedclient "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
-	kubeclient "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
-	"k8s.io/kubernetes/pkg/api"
-	apiunversioned "k8s.io/kubernetes/pkg/api/unversioned"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/pkg/api/errors"
 	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
-	"k8s.io/kubernetes/pkg/client/cache"
-	"k8s.io/kubernetes/pkg/controller/framework"
-	"k8s.io/kubernetes/pkg/conversion"
-	"k8s.io/kubernetes/pkg/types"
-	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
-	"k8s.io/kubernetes/pkg/util/sets"
+	fedclient "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm/predicates"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/validation"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/errors"
+	apiunversioned "k8s.io/kubernetes/pkg/api/unversioned"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/client/cache"
+	kubeclient "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
+	"k8s.io/kubernetes/pkg/controller/framework"
+	"k8s.io/kubernetes/pkg/conversion"
+	"k8s.io/kubernetes/pkg/types"
+	utilruntime "k8s.io/kubernetes/pkg/util/runtime"
+	"k8s.io/kubernetes/pkg/util/sets"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/watch"
-	"k8s.io/kubernetes/pkg/api/v1"
 )
 
 const (
@@ -57,24 +57,24 @@ const (
 
 // ConfigFactory knows how to fill out a federated-scheduler config with its support functions.
 type ConfigFactory struct {
-	FederatedClientSet           *fedclient.Clientset
-	KubeClientSet                *kubeclient.Clientset
+	FederatedClientSet *fedclient.Clientset
+	KubeClientSet      *kubeclient.Clientset
 	// queue for subReplicaSet that need scheduling
-	ReplicaSetQueue              *cache.FIFO
+	ReplicaSetQueue *cache.FIFO
 	// a means to list all known replicaSets.
-	ScheduledReplicaSetLister    *cache.StoreToReplicaSetLister
+	ScheduledReplicaSetLister *cache.StoreToReplicaSetLister
 	// a means to list all clusters
-	ClusterLister                *cache.StoreToClusterLister
+	ClusterLister *cache.StoreToClusterLister
 
 	// Close this to stop all reflectors
-	StopEverything               chan struct{}
+	StopEverything chan struct{}
 
 	scheduledReplicaSetPopulator *framework.Controller
 	schedulerCache               schedulercache.Cache
 	// SchedulerName of a federated-scheduler is used to select which replicaSets will be
 	// processed by this federated-scheduler, based on replicaSets's annotation key:
 	// 'federated-scheduler.alpha.kubernetes.io/name'
-	SchedulerName                string
+	SchedulerName string
 }
 
 // Initializes the factory.
@@ -83,15 +83,15 @@ func NewConfigFactory(federatedClientSet *fedclient.Clientset, kubeClientSet *ku
 	schedulerCache := schedulercache.New(30*time.Second, stopEverything)
 
 	c := &ConfigFactory{
-		FederatedClientSet:             federatedClientSet,
+		FederatedClientSet:        federatedClientSet,
 		KubeClientSet:             kubeClientSet,
-		ReplicaSetQueue:  cache.NewFIFO(cache.MetaNamespaceKeyFunc),
+		ReplicaSetQueue:           cache.NewFIFO(cache.MetaNamespaceKeyFunc),
 		ScheduledReplicaSetLister: &cache.StoreToReplicaSetLister{},
 		// Only cluster in the "Ready" condition with status == "Running" are schedulable
-		ClusterLister:      &cache.StoreToClusterLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
-		schedulerCache:   schedulerCache,
-		StopEverything:   stopEverything,
-		SchedulerName:    schedulerName,
+		ClusterLister:  &cache.StoreToClusterLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
+		schedulerCache: schedulerCache,
+		StopEverything: stopEverything,
+		SchedulerName:  schedulerName,
 	}
 
 	// On add/delete to the scheduled SubRS, remove from the assumed SubRS.
@@ -230,7 +230,7 @@ func (f *ConfigFactory) CreateFromKeys(predicateKeys, priorityKeys sets.String) 
 
 	replicaSetBackoff := rsBackoff{
 		perRsBackoff: map[types.NamespacedName]*backoffEntry{},
-		clock:         realClock{},
+		clock:        realClock{},
 
 		defaultDuration: 1 * time.Second,
 		maxDuration:     60 * time.Second,
@@ -240,8 +240,8 @@ func (f *ConfigFactory) CreateFromKeys(predicateKeys, priorityKeys sets.String) 
 		SchedulerCache: f.schedulerCache,
 		// The federated-scheduler only needs to consider schedulable clusters.
 		ClusterLister: f.ClusterLister.ClusterCondition(getClusterConditionPredicate()),
-		Algorithm:  algo,
-		Binder:     &binder{f.FederatedClientSet, f.KubeClientSet},
+		Algorithm:     algo,
+		Binder:        &binder{f.FederatedClientSet, f.KubeClientSet},
 		NextReplicaSet: func() *extensions.ReplicaSet {
 			return f.getNextReplicaSet()
 		},
@@ -353,7 +353,7 @@ func (factory *ConfigFactory) makeDefaultErrorFunc(backoff *rsBackoff, replicaSe
 				return
 			}
 			target, ok := rs.Annotations[unversioned.TargetClusterKey]
-			if  !ok || target == "" {
+			if !ok || target == "" {
 				replicaSetQueue.AddIfNotPresent(rs)
 			}
 
@@ -380,7 +380,7 @@ func (ce *clusterEnumerator) Get(index int) interface{} {
 }
 
 type binder struct {
-	fedClient *fedclient.Clientset
+	fedClient  *fedclient.Clientset
 	kubeClient *kubeclient.Clientset
 }
 
@@ -503,11 +503,11 @@ func generateSubRS(replicaSet *extensions.ReplicaSet) (*federation.SubReplicaSet
 	}
 	result := &federation.SubReplicaSet{
 		TypeMeta: apiunversioned.TypeMeta{
-			Kind: "SubReplicaSet",
+			Kind:       "SubReplicaSet",
 			APIVersion: "federation/v1alpha1",
 		},
-		Spec : rsTemp.Spec,
-		Status: rsTemp.Status,
+		Spec:       rsTemp.Spec,
+		Status:     rsTemp.Status,
 		ObjectMeta: rsTemp.ObjectMeta,
 	}
 

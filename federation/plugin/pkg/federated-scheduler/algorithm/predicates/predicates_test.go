@@ -13,6 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
 //TODO: to be changed later
 package predicates
 
@@ -21,11 +22,11 @@ import (
 	"os/exec"
 	"testing"
 
+	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
 	"k8s.io/kubernetes/pkg/api/v1"
 	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 	"k8s.io/kubernetes/pkg/util/codeinspector"
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
-	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
 
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
 )
@@ -50,9 +51,9 @@ func (clusters FakeClusterListInfo) GetClusterInfo(clusterName string) (*federat
 
 func TestReplicaSetFitsSelector(t *testing.T) {
 	tests := []struct {
-		replicaSet    *extensions.ReplicaSet
-		fits   bool
-		test   string
+		replicaSet *extensions.ReplicaSet
+		fits       bool
+		test       string
 	}{
 		{
 			replicaSet: &extensions.ReplicaSet{
@@ -99,7 +100,7 @@ func TestPredicatesRegistered(t *testing.T) {
 	targetFiles := []string{
 		"./../../algorithmprovider/defaults/defaults.go", // Default algorithm
 		"./../../factory/plugins.go",                     // Registered in init()
-		"./../../../../../../pkg/",                          // kubernetes/pkg, often used by kubelet or controller
+		"./../../../../../../pkg/",                       // kubernetes/pkg, often used by kubelet or controller
 	}
 
 	// List all golang source files under ./predicates/, excluding test files and sub-directories.
@@ -134,4 +135,3 @@ func TestPredicatesRegistered(t *testing.T) {
 		}
 	}
 }
-

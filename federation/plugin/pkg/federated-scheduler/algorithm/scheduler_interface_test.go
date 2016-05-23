@@ -25,8 +25,8 @@ import (
 // Some functions used by multiple federated-scheduler tests.
 
 type schedulerTester struct {
-	t          *testing.T
-	scheduler  ScheduleAlgorithm
+	t             *testing.T
+	scheduler     ScheduleAlgorithm
 	clusterLister ClusterLister
 }
 

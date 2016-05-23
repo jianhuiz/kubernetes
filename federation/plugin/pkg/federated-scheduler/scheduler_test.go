@@ -19,22 +19,22 @@ package scheduler
 import (
 	"errors"
 
+	"fmt"
 	"reflect"
 	"testing"
-	"fmt"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/conversion"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/pkg/api/testapi"
-	"k8s.io/kubernetes/pkg/client/record"
-	"k8s.io/kubernetes/pkg/util/diff"
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	apiunversioned "k8s.io/kubernetes/pkg/api/unversioned"
 	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	schedulertesting "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/testing"
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/testapi"
+	apiunversioned "k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/api/v1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	"k8s.io/kubernetes/pkg/client/record"
+	"k8s.io/kubernetes/pkg/conversion"
+	"k8s.io/kubernetes/pkg/util/diff"
 )
 
 type fakeBinder struct {
@@ -46,14 +46,14 @@ func (fb fakeBinder) Bind(rs *extensions.ReplicaSet) error { return fb.b(rs) }
 func replicaSetWithID(id, desiredCluster string) *extensions.ReplicaSet {
 	return &extensions.ReplicaSet{
 		TypeMeta: apiunversioned.TypeMeta{
-			Kind: "ReplicaSet",
+			Kind:       "ReplicaSet",
 			APIVersion: "extensions/v1beta1",
 		},
 		ObjectMeta: v1.ObjectMeta{
-			Name: id,
+			Name:         id,
 			GenerateName: id,
-			SelfLink: testapi.Default.SelfLink("replicasets", id),
-			Annotations: map[string]string{unversioned.ClusterSelectorKey: desiredCluster},
+			SelfLink:     testapi.Default.SelfLink("replicasets", id),
+			Annotations:  map[string]string{unversioned.ClusterSelectorKey: desiredCluster},
 		},
 	}
 }
@@ -77,11 +77,11 @@ func generateSubRS(replicaSet *extensions.ReplicaSet) (*federation.SubReplicaSet
 	}
 	result := &federation.SubReplicaSet{
 		TypeMeta: apiunversioned.TypeMeta{
-			Kind: "SubReplicaSet",
+			Kind:       "SubReplicaSet",
 			APIVersion: "federation/v1alpha1",
 		},
-		Spec : rsTemp.Spec,
-		Status: rsTemp.Status,
+		Spec:       rsTemp.Spec,
+		Status:     rsTemp.Status,
 		ObjectMeta: rsTemp.ObjectMeta,
 	}
 
@@ -114,36 +114,36 @@ func TestScheduler(t *testing.T) {
 	errS := errors.New("federated-scheduler")
 	errB := errors.New("binder")
 	table := []struct {
-		injectBindError       error
-		sendReplicaSet        *extensions.ReplicaSet
-		algo                  algorithm.ScheduleAlgorithm
-		expectErrorReplicaSet *extensions.ReplicaSet
+		injectBindError         error
+		sendReplicaSet          *extensions.ReplicaSet
+		algo                    algorithm.ScheduleAlgorithm
+		expectErrorReplicaSet   *extensions.ReplicaSet
 		expectAssumedReplicaSet *extensions.ReplicaSet
-		expectError           error
-		expectBind            *extensions.ReplicaSet
-		eventReason           string
+		expectError             error
+		expectBind              *extensions.ReplicaSet
+		eventReason             string
 	}{
 		{
-			sendReplicaSet: replicaSetWithID("foo", "cluster1, cluster2"),
-			algo:             mockScheduler{"cluster1", nil},
-			expectBind:       getExpectReplicaSet(replicaSetWithID("foo", ""),"cluster1"),
-			expectAssumedReplicaSet: getExpectReplicaSet(replicaSetWithID("foo", ""),"cluster1"),
-			eventReason:      "Scheduled",
+			sendReplicaSet:          replicaSetWithID("foo", "cluster1, cluster2"),
+			algo:                    mockScheduler{"cluster1", nil},
+			expectBind:              getExpectReplicaSet(replicaSetWithID("foo", ""), "cluster1"),
+			expectAssumedReplicaSet: getExpectReplicaSet(replicaSetWithID("foo", ""), "cluster1"),
+			eventReason:             "Scheduled",
 		}, {
 			sendReplicaSet:        replicaSetWithID("foo1", ""),
-			algo:           mockScheduler{"cluster1", errS},
-			expectError:    errS,
+			algo:                  mockScheduler{"cluster1", errS},
+			expectError:           errS,
 			expectErrorReplicaSet: replicaSetWithID("foo1", ""),
-			eventReason:    "FailedScheduling",
+			eventReason:           "FailedScheduling",
 		}, {
-			sendReplicaSet:         replicaSetWithID("foo2", ""),
-			algo:            mockScheduler{"cluster1", nil},
-			expectBind:       getExpectReplicaSet(replicaSetWithID("foo2", ""),"cluster1"),
-			expectAssumedReplicaSet: getExpectReplicaSet(replicaSetWithID("foo2", ""),"cluster1"),
-			injectBindError: errB,
-			expectError:     errB,
-			expectErrorReplicaSet:  getExpectReplicaSet(replicaSetWithID("foo2", ""),"cluster1"),
-			eventReason:     "FailedBinding",
+			sendReplicaSet:          replicaSetWithID("foo2", ""),
+			algo:                    mockScheduler{"cluster1", nil},
+			expectBind:              getExpectReplicaSet(replicaSetWithID("foo2", ""), "cluster1"),
+			expectAssumedReplicaSet: getExpectReplicaSet(replicaSetWithID("foo2", ""), "cluster1"),
+			injectBindError:         errB,
+			expectError:             errB,
+			expectErrorReplicaSet:   getExpectReplicaSet(replicaSetWithID("foo2", ""), "cluster1"),
+			eventReason:             "FailedBinding",
 		},
 	}
 
@@ -209,4 +209,3 @@ func TestScheduler(t *testing.T) {
 		events.Stop()
 	}
 }
-

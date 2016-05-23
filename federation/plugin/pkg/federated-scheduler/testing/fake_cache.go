@@ -33,7 +33,9 @@ func (f *FakeCache) AssumeReplicaSet(replicaSet *v1beta1.ReplicaSet) error {
 
 func (f *FakeCache) AddReplicaSet(replicaSet *v1beta1.ReplicaSet) error { return nil }
 
-func (f *FakeCache) UpdateReplicaSet(oldReplicaSet, newReplicaSet *v1beta1.ReplicaSet) error { return nil }
+func (f *FakeCache) UpdateReplicaSet(oldReplicaSet, newReplicaSet *v1beta1.ReplicaSet) error {
+	return nil
+}
 
 func (f *FakeCache) RemoveReplicaSet(replicaSet *v1beta1.ReplicaSet) error { return nil }
 

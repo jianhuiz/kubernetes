@@ -108,7 +108,7 @@ type ClusterPriority struct {
 	// Name of the host
 	Cluster string `json:"cluster"`
 	// Score associated with the host
-	Score   int `json:"score"`
+	Score int `json:"score"`
 }
 
 type ClusterPriorityList []ClusterPriority

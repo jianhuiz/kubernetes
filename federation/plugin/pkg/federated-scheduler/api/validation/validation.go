@@ -19,8 +19,8 @@ package validation
 import (
 	"fmt"
 
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
+	utilerrors "k8s.io/kubernetes/pkg/util/errors"
 )
 
 // Validate checks for errors in the Config

@@ -22,18 +22,18 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm/predicates"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
+	"k8s.io/kubernetes/pkg/util/sets"
 
 	"github.com/golang/glog"
 )
 
 // PluginFactoryArgs are passed to all plugin factory functions.
 type PluginFactoryArgs struct {
-	ClusterLister    algorithm.ClusterLister
-	ClusterInfo      predicates.ClusterInfo
+	ClusterLister algorithm.ClusterLister
+	ClusterInfo   predicates.ClusterInfo
 }
 
 // A FitPredicateFactory produces a FitPredicate from the given args.

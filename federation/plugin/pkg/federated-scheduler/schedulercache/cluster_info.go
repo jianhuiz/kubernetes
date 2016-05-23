@@ -21,8 +21,8 @@ import (
 
 	"github.com/golang/glog"
 
-	clientcache "k8s.io/kubernetes/pkg/client/cache"
 	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	clientcache "k8s.io/kubernetes/pkg/client/cache"
 )
 
 // ClusterInfo is cluster level aggregated information.
@@ -54,7 +54,7 @@ func (c *ClusterInfo) SubReplicaSets() []*v1beta1.ReplicaSet {
 func (c *ClusterInfo) Clone() *ClusterInfo {
 	replicaSets := append([]*v1beta1.ReplicaSet(nil), c.replicaSets...)
 	clone := &ClusterInfo{
-		replicaSets:              replicaSets,
+		replicaSets: replicaSets,
 	}
 	return clone
 }

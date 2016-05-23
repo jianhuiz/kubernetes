@@ -30,7 +30,9 @@ func (r ReplicaSetsToCache) AssumeReplicaSet(replicaSet *extensions.ReplicaSet) 
 
 func (r ReplicaSetsToCache) AddReplicaSet(replicaSet *extensions.ReplicaSet) error { return nil }
 
-func (r ReplicaSetsToCache) UpdateReplicaSet(oldReplicaSet, newReplicaSet *extensions.ReplicaSet) error { return nil }
+func (r ReplicaSetsToCache) UpdateReplicaSet(oldReplicaSet, newReplicaSet *extensions.ReplicaSet) error {
+	return nil
+}
 
 func (r ReplicaSetsToCache) RemoveReplicaSet(replicaSet *extensions.ReplicaSet) error { return nil }
 
