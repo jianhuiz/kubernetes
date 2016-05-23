@@ -50,7 +50,7 @@ func NewSchedulerServer() *SchedulerServer {
 
 // AddFlags adds flags for a specific SchedulerServer to the specified FlagSet
 func (s *SchedulerServer) AddFlags(fs *pflag.FlagSet) {
-	fs.IntVar(&s.Port, "port", s.Port, "The port that the federated-scheduler's http service runs on")
+	fs.Int32Var(&s.Port, "port", s.Port, "The port that the federated-scheduler's http service runs on")
 	fs.StringVar(&s.Address, "address", s.Address, "The IP address to serve on (set to 0.0.0.0 for all interfaces)")
 	fs.StringVar(&s.AlgorithmProvider, "algorithm-provider", s.AlgorithmProvider, "The scheduling algorithm provider to use, one of: "+factory.ListAlgorithmProviders())
 	fs.StringVar(&s.PolicyConfigFile, "policy-config-file", s.PolicyConfigFile, "File with federated-scheduler policy configuration")
@@ -64,7 +64,7 @@ func (s *SchedulerServer) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&unusedBindPodsBurst, "bind-pods-burst", 0, "unused, use --kube-api-burst")
 	fs.MarkDeprecated("bind-pods-burst", "flag is unused and will be removed. Use kube-api-burst instead.")
 	fs.Float32Var(&s.KubeAPIQPS, "kube-api-qps", s.KubeAPIQPS, "QPS to use while talking with kubernetes apiserver")
-	fs.IntVar(&s.KubeAPIBurst, "kube-api-burst", s.KubeAPIBurst, "Burst to use while talking with kubernetes apiserver")
+	fs.Int32Var(&s.KubeAPIBurst, "kube-api-burst", s.KubeAPIBurst, "Burst to use while talking with kubernetes apiserver")
 	fs.StringVar(&s.SchedulerName, "federated-scheduler-name", s.SchedulerName, "Name of the federated-scheduler, used to select which pods will be processed by this federated-scheduler, based on pod's annotation with key 'federated-scheduler.alpha.kubernetes.io/name'")
 	leaderelection.BindFlags(&s.LeaderElection, fs)
 }
