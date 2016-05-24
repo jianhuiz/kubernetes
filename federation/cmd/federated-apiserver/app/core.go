@@ -22,25 +22,27 @@ import (
 	"k8s.io/kubernetes/pkg/genericapiserver"
 	genericoptions "k8s.io/kubernetes/pkg/genericapiserver/options"
 
-	"k8s.io/kubernetes/federation/apis/core"
-	_ "k8s.io/kubernetes/federation/apis/core/install"
-	"k8s.io/kubernetes/federation/apis/core/v1"
 	"k8s.io/kubernetes/pkg/api"
+	core "k8s.io/kubernetes/pkg/api"
+	_ "k8s.io/kubernetes/pkg/api/install"
 	"k8s.io/kubernetes/pkg/api/rest"
+	endpointsetcd "k8s.io/kubernetes/pkg/registry/endpoint/etcd"
 	serviceetcd "k8s.io/kubernetes/pkg/registry/service/etcd"
 )
 
 func installCoreAPIs(s *genericoptions.ServerRunOptions, g *genericapiserver.GenericAPIServer, f genericapiserver.StorageFactory) {
 	serviceStore, serviceStatusStorage := serviceetcd.NewREST(createRESTOptionsOrDie(s, g, f, api.Resource("service")))
+	endpointsStorage := endpointsetcd.NewREST(createRESTOptionsOrDie(s, g, f, api.Resource("endpoints")))
 	coreResources := map[string]rest.Storage{
 		"services":        serviceStore,
 		"services/status": serviceStatusStorage,
+		"endpoints":       endpointsStorage,
 	}
 	coreGroupMeta := registered.GroupOrDie(core.GroupName)
 	apiGroupInfo := genericapiserver.APIGroupInfo{
 		GroupMeta: *coreGroupMeta,
 		VersionedResourcesStorageMap: map[string]map[string]rest.Storage{
-			v1.SchemeGroupVersion.Version: coreResources,
+			"v1": coreResources,
 		},
 		OptionsExternalVersion: &registered.GroupOrDie(core.GroupName).GroupVersion,
 		IsLegacyGroup:          true,
