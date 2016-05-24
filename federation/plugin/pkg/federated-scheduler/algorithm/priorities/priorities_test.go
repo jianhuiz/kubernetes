@@ -20,13 +20,13 @@ package priorities
 import (
 	"testing"
 
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	federation "k8s.io/kubernetes/federation/apis/federation"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/v1"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	v1 "k8s.io/kubernetes/pkg/api"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/conversion"
 )
 

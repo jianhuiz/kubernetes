@@ -18,7 +18,7 @@ package schedulercache
 
 import (
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	v1beta1 "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 // CreateClusterNameToInfoMap obtains a list of subrss and pivots that list into a map where the keys are cluster names

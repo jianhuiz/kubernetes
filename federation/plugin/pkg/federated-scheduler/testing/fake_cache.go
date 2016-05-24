@@ -18,7 +18,7 @@ package schedulercache
 
 import (
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	v1beta1 "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 // FakeCache is used for testing

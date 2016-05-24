@@ -19,7 +19,9 @@ package cache
 import (
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/federation/apis/federation"
+	"k8s.io/kubernetes/pkg/api"
 	kubeCache "k8s.io/kubernetes/pkg/client/cache"
+	"k8s.io/kubernetes/pkg/labels"
 )
 
 // StoreToClusterLister makes a Store have the List method of the unversioned.ClusterInterface
@@ -61,4 +63,47 @@ func (s storeToClusterConditionLister) List() (clusters federation.ClusterList, 
 		}
 	}
 	return
+}
+
+// StoreToReplicationControllerLister gives a store List and Exists methods. The store must contain only ReplicationControllers.
+type StoreToSubReplicaSetLister struct {
+	kubeCache.Store
+}
+
+// StoreToSubReplicaSetLister lists all replicaSets in the store.
+func (s *StoreToSubReplicaSetLister) List() (replicaSets []federation.SubReplicaSet, err error) {
+	for _, c := range s.Store.List() {
+		replicaSets = append(replicaSets, *(c.(*federation.SubReplicaSet)))
+	}
+	return replicaSets, nil
+}
+
+// Exists checks if the given SubRS exists in the store.
+func (s *StoreToSubReplicaSetLister) Exists(rs *federation.SubReplicaSet) (bool, error) {
+	_, exists, err := s.Store.Get(rs)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+type storeSubRSsNamespacer struct {
+	store     kubeCache.Store
+	namespace string
+}
+
+func (s storeSubRSsNamespacer) List(selector labels.Selector) (rss []federation.SubReplicaSet, err error) {
+	for _, c := range s.store.List() {
+		rs := *(c.(*federation.SubReplicaSet))
+		if s.namespace == api.NamespaceAll || s.namespace == rs.Namespace {
+			if selector.Matches(labels.Set(rs.Labels)) {
+				rss = append(rss, rs)
+			}
+		}
+	}
+	return
+}
+
+func (s *StoreToSubReplicaSetLister) SubRSs(namespace string) storeSubRSsNamespacer {
+	return storeSubRSsNamespacer{s.Store, namespace}
 }

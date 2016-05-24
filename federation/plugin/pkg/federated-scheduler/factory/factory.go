@@ -25,8 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
-	fedclient "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
+	federation "k8s.io/kubernetes/federation/apis/federation"
+	fedcache "k8s.io/kubernetes/federation/client/cache"
+	fedclient "k8s.io/kubernetes/federation/client/clientset_generated/federation_internalclientset"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm/predicates"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
@@ -35,9 +36,9 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
 	apiunversioned "k8s.io/kubernetes/pkg/api/unversioned"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/client/cache"
-	kubeclient "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
+	kubeclient "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/controller/framework"
 	"k8s.io/kubernetes/pkg/conversion"
 	"k8s.io/kubernetes/pkg/types"
@@ -46,7 +47,7 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	"k8s.io/kubernetes/pkg/api/v1"
+	v1 "k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/watch"
 )
@@ -64,7 +65,7 @@ type ConfigFactory struct {
 	// a means to list all known replicaSets.
 	ScheduledReplicaSetLister *cache.StoreToReplicaSetLister
 	// a means to list all clusters
-	ClusterLister *cache.StoreToClusterLister
+	ClusterLister *fedcache.StoreToClusterLister
 
 	// Close this to stop all reflectors
 	StopEverything chan struct{}
@@ -88,7 +89,7 @@ func NewConfigFactory(federatedClientSet *fedclient.Clientset, kubeClientSet *ku
 		ReplicaSetQueue:           cache.NewFIFO(cache.MetaNamespaceKeyFunc),
 		ScheduledReplicaSetLister: &cache.StoreToReplicaSetLister{},
 		// Only cluster in the "Ready" condition with status == "Running" are schedulable
-		ClusterLister:  &cache.StoreToClusterLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
+		ClusterLister:  &fedcache.StoreToClusterLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
 		schedulerCache: schedulerCache,
 		StopEverything: stopEverything,
 		SchedulerName:  schedulerName,
@@ -267,7 +268,7 @@ func (f *ConfigFactory) responsibleForReplicaSet(rs *extensions.ReplicaSet) bool
 	}
 }
 
-func getClusterConditionPredicate() cache.ClusterConditionPredicate {
+func getClusterConditionPredicate() fedcache.ClusterConditionPredicate {
 	return func(cluster federation.Cluster) bool {
 		// If we have no info, don't accept
 		if len(cluster.Status.Conditions) == 0 {

@@ -26,7 +26,7 @@ import (
 	"os"
 	"strconv"
 
-	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
+	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_internalclientset"
 	"k8s.io/kubernetes/federation/plugin/cmd/federated-scheduler/app/options"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler"
 	_ "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithmprovider"
@@ -34,7 +34,7 @@ import (
 	latestschedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api/latest"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/factory"
 	"k8s.io/kubernetes/pkg/api"
-	kubeclient "k8s.io/kubernetes/pkg/client/clientset_generated/release_1_3"
+	kubeclient "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/client/record"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	"k8s.io/kubernetes/pkg/healthz"

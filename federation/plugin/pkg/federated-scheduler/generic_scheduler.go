@@ -24,11 +24,11 @@ import (
 	"strings"
 	"sync"
 
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	federation "k8s.io/kubernetes/federation/apis/federation"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/sets"
 

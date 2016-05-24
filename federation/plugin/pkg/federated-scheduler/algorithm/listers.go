@@ -17,7 +17,7 @@ limitations under the License.
 package algorithm
 
 import (
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
+	federation "k8s.io/kubernetes/federation/apis/federation"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 )
 

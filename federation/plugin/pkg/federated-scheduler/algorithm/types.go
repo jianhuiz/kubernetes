@@ -19,7 +19,7 @@ package algorithm
 import (
 	schedulerapi "k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/api"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 // FitPredicate is a function that indicates if a replicaset fits into an existing cluster.

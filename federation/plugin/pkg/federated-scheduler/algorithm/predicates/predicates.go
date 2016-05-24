@@ -21,14 +21,14 @@ import (
 	"strings"
 
 	"github.com/golang/glog"
+	federation "k8s.io/kubernetes/federation/apis/federation"
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	federation "k8s.io/kubernetes/federation/apis/federation/v1alpha1"
-	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_release_1_3"
+	fedcache "k8s.io/kubernetes/federation/client/cache"
+	fedclientset "k8s.io/kubernetes/federation/client/clientset_generated/federation_internalclientset"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	"k8s.io/kubernetes/pkg/api/v1"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/pkg/client/cache"
+	v1 "k8s.io/kubernetes/pkg/api"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 type ClusterInfo interface {
@@ -57,7 +57,7 @@ func (clusters ClientClusterInfo) GetClusterInfo(clusterName string) (*federatio
 }
 
 type CachedClusterInfo struct {
-	*cache.StoreToClusterLister
+	*fedcache.StoreToClusterLister
 }
 
 // GetClusterInfo returns cached data for the cluster 'id'.

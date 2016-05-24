@@ -18,7 +18,7 @@ package schedulercache
 
 import (
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 // ReplicaSetsToCache is used for testing

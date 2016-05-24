@@ -17,7 +17,7 @@ limitations under the License.
 package algorithm
 
 import (
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 // ScheduleAlgorithm is an interface implemented by things that know how to schedule replicasets

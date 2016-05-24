@@ -25,7 +25,7 @@ import (
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	v1beta1 "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 var (

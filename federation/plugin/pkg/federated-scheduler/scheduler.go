@@ -19,13 +19,13 @@ package scheduler
 import (
 	"time"
 
-	"k8s.io/kubernetes/pkg/api/v1"
+	v1 "k8s.io/kubernetes/pkg/api"
 
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/algorithm"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/metrics"
 	"k8s.io/kubernetes/federation/plugin/pkg/federated-scheduler/schedulercache"
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 	"k8s.io/kubernetes/pkg/client/record"
 	"k8s.io/kubernetes/pkg/util/wait"
 

@@ -21,7 +21,7 @@ import (
 
 	"github.com/golang/glog"
 
-	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	v1beta1 "k8s.io/kubernetes/pkg/apis/extensions"
 	clientcache "k8s.io/kubernetes/pkg/client/cache"
 )
 

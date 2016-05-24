@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"k8s.io/kubernetes/federation/apis/federation/unversioned"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	v1 "k8s.io/kubernetes/pkg/api"
+	v1beta1 "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 // TestAssumeReplicaSetScheduled tests that after a replicaSet is assumed, its information is aggregated

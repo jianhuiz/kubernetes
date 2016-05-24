@@ -19,7 +19,7 @@ package algorithm
 import (
 	"testing"
 
-	extensions "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
+	extensions "k8s.io/kubernetes/pkg/apis/extensions"
 )
 
 // Some functions used by multiple federated-scheduler tests.
