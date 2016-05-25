@@ -81,11 +81,8 @@ func (cc *clusterClientCache) syncService(key, clusterName string, clusterCache 
 			glog.Infof("Found tombstone for %v", key)
 			needUpdate = cc.processServiceDeletion(cachedService, clusterName)
 		}
-	} else {
-		// service absence in store means watcher caught the deletion
-		glog.Infof("service has been deleted %v", key)
-		needUpdate = cc.processServiceDeletion(cachedService, clusterName)
 	}
+
 	if needUpdate {
 		err := cc.persistFedServiceUpdate(cachedService, fedClient)
 		if err == nil {

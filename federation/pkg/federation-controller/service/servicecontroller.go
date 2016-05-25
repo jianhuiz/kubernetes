@@ -238,6 +238,7 @@ func (s *ServiceController) fedServiceWorker() {
 			if quit {
 				return
 			}
+
 			defer s.queue.Done(key)
 			err := s.syncService(key.(string))
 			if err != nil {
@@ -609,7 +610,7 @@ func (s *ServiceController) clusterSyncLoop() {
 		return
 	}
 	glog.Infof("Detected change in list of cluster names. New  set: %v, Old set: %v", newSet, s.knownClusterSet)
-	increase = newSet.Difference(newSet)
+	increase = newSet.Difference(s.knownClusterSet)
 	// do nothing when cluster is removed.
 	if increase != nil {
 		for newCluster := range increase {
@@ -822,7 +823,8 @@ func (s *ServiceController) processServiceUpdate(cachedService *cachedService, s
 	// NOTE: Since we update the cached service if and only if we successfully
 	// processed it, a cached service being nil implies that it hasn't yet
 	// been successfully processed.
-	//cachedService.appliedState = service
+
+	cachedService.appliedState = service
 	s.serviceCache.set(key, cachedService)
 	glog.V(4).Infof("successfully procceeded services %s", key)
 	cachedService.resetRetryDelay()
