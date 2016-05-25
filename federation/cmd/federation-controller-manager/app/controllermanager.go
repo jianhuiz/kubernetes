@@ -33,6 +33,7 @@ import (
 	"k8s.io/kubernetes/federation/pkg/dnsprovider"
 	clustercontroller "k8s.io/kubernetes/federation/pkg/federation-controller/cluster"
 	servicecontroller "k8s.io/kubernetes/federation/pkg/federation-controller/service"
+	subreplicasetcontroller "k8s.io/kubernetes/federation/pkg/federation-controller/subreplicaset"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	"k8s.io/kubernetes/pkg/healthz"
 	"k8s.io/kubernetes/pkg/util/configz"
@@ -110,6 +111,10 @@ func StartControllers(s *options.CMServer, restClientCfg *restclient.Config) err
 
 	federationClientSet := federationclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, "cluster-controller"))
 	go clustercontroller.NewclusterController(federationClientSet, s.ClusterMonitorPeriod.Duration).Run()
+
+	subreplicasetClientset := internalclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, "federation-subreplicaset-controller"))
+	go subreplicasetcontroller.NewSubReplicaSetController(subreplicasetClientset, 5).Run(5, wait.NeverStop)
+
 	dns, err := dnsprovider.InitDnsProvider(s.DnsProvider, s.DnsConfigFile)
 	if err != nil {
 		glog.Fatalf("Cloud provider could not be initialized: %v", err)
