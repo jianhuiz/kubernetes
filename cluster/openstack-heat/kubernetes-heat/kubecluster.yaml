@@ -200,6 +200,9 @@ resources:
         - protocol: tcp # api-server
           port_range_min: 443
           port_range_max: 443
+        - protocol: tcp # api-server
+          port_range_min: 8080
+          port_range_max: 8080
 
   secgroup_node:
     type: OS::Neutron::SecurityGroup
@@ -294,6 +297,8 @@ resources:
             "$OS_REGION_NAME": {get_param: os_region_name}
             "$OS_TENANT_ID": {get_param: os_tenant_id}
             "$role": "kubernetes-master"
+            "$SUBNET_ID": {get_resource: fixed_subnet}
+            "$FLOATING_NETWORK_ID": {get_param: external_network}
 
   run_salt:
     type: OS::Heat::SoftwareConfig
