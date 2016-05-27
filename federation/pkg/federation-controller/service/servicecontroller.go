@@ -185,7 +185,26 @@ func New(federationClient federationclientset.Interface, dns dnsprovider.Interfa
 			DeleteFunc: s.clusterCache.delFromClusterSet,
 			AddFunc:    s.clusterCache.addToClientMap,
 			UpdateFunc: func(old, cur interface{}) {
-				s.clusterCache.addToClientMap(cur)
+				oldCluster, ok := old.(*federation.Cluster)
+				if !ok {
+					return
+				}
+				curCluster, ok := cur.(*federation.Cluster)
+				if !ok {
+					return
+				}
+				if !reflect.DeepEqual(oldCluster.Spec, curCluster.Spec) {
+					// update when spec is changed
+					s.clusterCache.addToClientMap(cur)
+				}
+
+				pred := getClusterConditionPredicate()
+				// only update when condition changed to ready from not-ready
+				if !pred(*oldCluster) && pred(*curCluster) {
+					s.clusterCache.addToClientMap(cur)
+				}
+				// did not handle ready -> not-ready
+				// how could we stop a controller?
 			},
 		},
 	)

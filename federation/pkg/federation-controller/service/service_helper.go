@@ -38,16 +38,17 @@ func (sc *ServiceController) clusterServiceWorker() {
 	for clusterName, cache := range sc.clusterCache.clientMap {
 		go func(cache *clusterCache, clusterName string) {
 			for {
-				key, quit := cache.serviceQueue.Get()
-				// update service cache
-				if quit {
-					return
-				}
-				defer cache.serviceQueue.Done(key)
-				err := sc.clusterCache.syncService(key.(string), clusterName, cache, sc.serviceCache, fedClient)
-				if err != nil {
-					glog.Errorf("failed to sync service: %+v", err)
-				}
+				func() {
+					key, quit := cache.serviceQueue.Get()
+					defer cache.serviceQueue.Done(key)
+					if quit {
+						return
+					}
+					err := sc.clusterCache.syncService(key.(string), clusterName, cache, sc.serviceCache, fedClient)
+					if err != nil {
+						glog.Errorf("failed to sync service: %+v", err)
+					}
+				}()
 			}
 		}(cache, clusterName)
 	}
@@ -81,6 +82,10 @@ func (cc *clusterClientCache) syncService(key, clusterName string, clusterCache 
 			glog.Infof("Found tombstone for %v", key)
 			needUpdate = cc.processServiceDeletion(cachedService, clusterName)
 		}
+	}
+	if !exists {
+		glog.Infof("can not get service %v for cluster %s from serviceStore", key, clusterName)
+		needUpdate = cc.processServiceDeletion(cachedService, clusterName)
 	}
 
 	if needUpdate {
@@ -242,8 +247,6 @@ func (cc *clusterClientCache) enqueueService(obj interface{}, clusterName string
 		glog.Errorf("Couldn't get key for object %+v: %v", obj, err)
 		return
 	}
-	cc.rwlock.Lock()
-	defer cc.rwlock.Unlock()
 	_, ok := cc.clientMap[clusterName]
 	if ok {
 		cc.clientMap[clusterName].serviceQueue.Add(key)
