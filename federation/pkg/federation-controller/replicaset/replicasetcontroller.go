@@ -29,6 +29,7 @@ import (
 	planner "k8s.io/kubernetes/federation/pkg/federation-controller/replicaset/planner"
 	fedutil "k8s.io/kubernetes/federation/pkg/federation-controller/util"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/errors"
 	apiv1 "k8s.io/kubernetes/pkg/api/v1"
 	extensionsv1 "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 	"k8s.io/kubernetes/pkg/client/cache"
@@ -283,7 +284,8 @@ func (frsc *ReplicaSetController) reconcileReplicaSet(key string) error {
 	}
 	if !exists {
 		// don't delete local replicasets for now
-		return nil
+		err = frsc.deleteReplicaSet(key)
+		return err
 	}
 	frs := obj.(*extensionsv1.ReplicaSet)
 
@@ -356,6 +358,12 @@ func (frsc *ReplicaSetController) reconcileReplicaSet(key string) error {
 			fedStatus.Replicas += lrs.Status.Replicas
 			fedStatus.FullyLabeledReplicas += lrs.Status.FullyLabeledReplicas
 			// leave the replicaset even the replicas dropped to 0
+			if replicas == 0 {
+				err := clusterClient.Extensions().ReplicaSets(frs.Namespace).Delete(frs.Name, &api.DeleteOptions{})
+				if err != nil && !errors.IsNotFound(err) {
+					return err
+				}
+			}
 		}
 	}
 	if fedStatus.Replicas != frs.Status.Replicas || fedStatus.FullyLabeledReplicas != frs.Status.FullyLabeledReplicas {
@@ -378,4 +386,27 @@ func (frsc *ReplicaSetController) reconcileNamespacesOnClusterChange() {
 		key, _ := controller.KeyFunc(rs)
 		frsc.deliverReplicaSetByKey(key, 0, false)
 	}
+}
+
+func (frsc *ReplicaSetController) deleteReplicaSet(key string) error {
+	glog.Infof("deleting replicaset: %v", key)
+	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+	if err != nil {
+		return err
+	}
+	// try delete from all clusters
+	clusters, err := frsc.fedInformer.GetReadyClusters()
+	for _, cluster := range clusters {
+		clusterClient, err := frsc.fedInformer.GetClientsetForCluster(cluster.Name)
+		if err != nil {
+			return err
+		}
+		err = clusterClient.Extensions().ReplicaSets(namespace).Delete(name, &api.DeleteOptions{})
+		if err != nil && !errors.IsNotFound(err) {
+			glog.Warningf("failed deleting repicaset %v/%v/%v, err: %v", cluster.Name, namespace, name, err)
+			return err
+		}
+	}
+	return nil
+
 }
