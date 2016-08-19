@@ -91,7 +91,7 @@ func Run(s *options.CMServer) error {
 		glog.Errorf("unable to register configz: %s", err)
 	}
 	// Create the config to talk to federation-apiserver.
-	kubeconfigGetter := util.KubeconfigGetterForSecret(KubeconfigSecretName)
+	kubeconfigGetter := util.KubeconfigGetterForSecret("")
 	restClientCfg, err := clientcmd.BuildConfigFromKubeconfigGetter(s.Master, kubeconfigGetter)
 	if err != nil || restClientCfg == nil {
 		// Retry with the deprecated name in 1.4.
@@ -143,9 +143,11 @@ func StartControllers(s *options.CMServer, restClientCfg *restclient.Config) err
 	}
 	scClientset := federationclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, servicecontroller.UserAgentName))
 	servicecontroller := servicecontroller.New(scClientset, dns, s.FederationName, s.ZoneName)
-	if err := servicecontroller.Run(s.ConcurrentServiceSyncs, wait.NeverStop); err != nil {
-		glog.Errorf("Failed to start service controller: %v", err)
-	}
+	go func() {
+		if err := servicecontroller.Run(s.ConcurrentServiceSyncs, wait.NeverStop); err != nil {
+			glog.Errorf("Failed to start service controller: %v", err)
+		}
+	}()
 
 	nsClientset := federationclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, "namespace-controller"))
 	namespaceController := namespacecontroller.NewNamespaceController(nsClientset)
