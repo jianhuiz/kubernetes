@@ -31,8 +31,10 @@ func init() {
 		DeepCopy_federation_Cluster,
 		DeepCopy_federation_ClusterCondition,
 		DeepCopy_federation_ClusterList,
+		DeepCopy_federation_ClusterReplicaSetPreferences,
 		DeepCopy_federation_ClusterSpec,
 		DeepCopy_federation_ClusterStatus,
+		DeepCopy_federation_FederatedReplicaSetPreferences,
 		DeepCopy_federation_ServerAddressByClientCIDR,
 	); err != nil {
 		// if one of the deep copy functions is malformed, detect it immediately.
@@ -91,6 +93,19 @@ func DeepCopy_federation_ClusterList(in ClusterList, out *ClusterList, c *conver
 	return nil
 }
 
+func DeepCopy_federation_ClusterReplicaSetPreferences(in ClusterReplicaSetPreferences, out *ClusterReplicaSetPreferences, c *conversion.Cloner) error {
+	out.MinReplicas = in.MinReplicas
+	if in.MaxReplicas != nil {
+		in, out := in.MaxReplicas, &out.MaxReplicas
+		*out = new(int64)
+		**out = *in
+	} else {
+		out.MaxReplicas = nil
+	}
+	out.Weight = in.Weight
+	return nil
+}
+
 func DeepCopy_federation_ClusterSpec(in ClusterSpec, out *ClusterSpec, c *conversion.Cloner) error {
 	if in.ServerAddressByClientCIDRs != nil {
 		in, out := in.ServerAddressByClientCIDRs, &out.ServerAddressByClientCIDRs
@@ -135,6 +150,24 @@ func DeepCopy_federation_ClusterStatus(in ClusterStatus, out *ClusterStatus, c *
 		out.Zones = nil
 	}
 	out.Region = in.Region
+	return nil
+}
+
+func DeepCopy_federation_FederatedReplicaSetPreferences(in FederatedReplicaSetPreferences, out *FederatedReplicaSetPreferences, c *conversion.Cloner) error {
+	out.Rebalance = in.Rebalance
+	if in.Clusters != nil {
+		in, out := in.Clusters, &out.Clusters
+		*out = make(map[string]ClusterReplicaSetPreferences)
+		for key, val := range in {
+			newVal := new(ClusterReplicaSetPreferences)
+			if err := DeepCopy_federation_ClusterReplicaSetPreferences(val, newVal, c); err != nil {
+				return err
+			}
+			(*out)[key] = *newVal
+		}
+	} else {
+		out.Clusters = nil
+	}
 	return nil
 }
 
