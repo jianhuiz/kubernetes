@@ -145,7 +145,7 @@ func StartControllers(s *options.CMServer, restClientCfg *restclient.Config) err
 	}
 
 	replicaSetClientset := federationclientset.NewForConfigOrDie(restclient.AddUserAgent(restClientCfg, replicasetcontroller.UserAgentName))
-	replicaSetController := replicasetcontroller.NewReplicaSetController(replicaSetClientset)
+	replicaSetController := replicasetcontroller.NewReplicaSetController(replicaSetClientset, s.ReplicaSetProcessDelays)
 	go replicaSetController.Run(s.ConcurrentReplicaSetSyncs, wait.NeverStop)
 
 	glog.Infof("Loading client config for service controller %q", servicecontroller.UserAgentName)
