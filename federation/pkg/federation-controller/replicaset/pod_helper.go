@@ -85,7 +85,7 @@ func AnalysePods(replicaSet *v1beta1.ReplicaSet, allPods []util.FederatedObject,
 
 func labelSelectorAsSelector(ps *v1beta1.LabelSelector) (labels.Selector, error) {
 	unversionedSelector := unversioned.LabelSelector{}
-	if err := api.Scheme.Convert(ps, &unversionedSelector, nil); err != nil {
+	if err := api.Scheme.Convert(ps, &unversionedSelector); err != nil {
 		return nil, err
 	}
 	return unversioned.LabelSelectorAsSelector(&unversionedSelector)
