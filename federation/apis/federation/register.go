@@ -48,7 +48,7 @@ func addKnownTypes(scheme *runtime.Scheme) {
 		&Cluster{},
 		&ClusterList{},
 		&api.ListOptions{},
-		&api.DeleteOptions{},
+		//&api.DeleteOptions{},
 	)
 }
 
