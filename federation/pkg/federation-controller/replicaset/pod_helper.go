@@ -69,9 +69,9 @@ func AnalysePods(replicaSet *v1beta1.ReplicaSet, allPods []util.FederatedObject,
 					}
 				} else {
 					if condition.Type == api_v1.PodScheduled &&
-						condition.Status == api_v1.ConditionFalse &&
+						condition.Status == api_v1.ConditionFalse { /*&&
 						condition.Reason == "Unschedulable" &&
-						condition.LastTransitionTime.Add(UnschedulableThreshold).Before(currentTime) {
+						condition.LastTransitionTime.Add(UnschedulableThreshold).Before(currentTime) {*/
 
 						status.Unschedulable++
 					}
