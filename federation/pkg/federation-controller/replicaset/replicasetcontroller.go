@@ -34,7 +34,6 @@ import (
 	planner "k8s.io/kubernetes/federation/pkg/federation-controller/replicaset/planner"
 	fedutil "k8s.io/kubernetes/federation/pkg/federation-controller/util"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
 	apiv1 "k8s.io/kubernetes/pkg/api/v1"
 	extensionsv1 "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
 	"k8s.io/kubernetes/pkg/client/cache"
@@ -560,23 +559,26 @@ func (frsc *ReplicaSetController) reconcileReplicaSetsOnClusterChange() {
 
 func (frsc *ReplicaSetController) deleteReplicaSet(key string) error {
 	glog.Infof("deleting replicaset: %v", key)
-	namespace, name, err := cache.SplitMetaNamespaceKey(key)
+
+	operations := make([]fedutil.FederatedOperation, 0)
+	// try delete from all clusters
+	clusters, err := frsc.fedReplicaSetInformer.GetReadyClusters()
 	if err != nil {
 		return err
 	}
-	// try delete from all clusters
-	clusters, err := frsc.fedReplicaSetInformer.GetReadyClusters()
 	for _, cluster := range clusters {
-		clusterClient, err := frsc.fedReplicaSetInformer.GetClientsetForCluster(cluster.Name)
+		lrsObj, exists, err := frsc.fedReplicaSetInformer.GetTargetStore().GetByKey(cluster.Name, key)
 		if err != nil {
 			return err
 		}
-		err = clusterClient.Extensions().ReplicaSets(namespace).Delete(name, &api.DeleteOptions{})
-		if err != nil && !errors.IsNotFound(err) {
-			glog.Warningf("failed deleting repicaset %v/%v/%v, err: %v", cluster.Name, namespace, name, err)
-			return err
+		lrs := lrsObj.(*extensionsv1.ReplicaSet)
+		if exists {
+			operations = append(operations, fedutil.FederatedOperation{
+				Type:        fedutil.OperationTypeDelete,
+				Obj:         lrs,
+				ClusterName: cluster.Name,
+			})
 		}
 	}
-	return nil
-
+	return frsc.fedUpdater.Update(operations, updateTimeout)
 }
