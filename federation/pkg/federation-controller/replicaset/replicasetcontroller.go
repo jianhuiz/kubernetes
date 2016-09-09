@@ -202,7 +202,7 @@ func NewReplicaSetController(federationClient fedclientset.Interface, replicaSet
 		&extensionsv1.ReplicaSet{},
 		controller.NoResyncPeriodFunc(),
 		fedutil.NewTriggerOnMetaAndSpecChanges(
-			func(obj runtime.Object) { frsc.deliverFedReplicaSetObj(obj, replicaSetReviewDelay) },
+			func(obj runtime.Object) { frsc.deliverFedReplicaSetObj(obj, 0) },
 		),
 	)
 
