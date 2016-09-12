@@ -475,7 +475,11 @@ func (frsc *ReplicaSetController) reconcileReplicaSet(key string) (reconciliatio
 			current[cluster.Name] = int64(podStatus[cluster.Name].RunningAndReady) // include pending as well?
 			unschedulable := int64(podStatus[cluster.Name].Unschedulable)
 			if unschedulable > 0 {
-				estimatedCapacity[cluster.Name] = int64(*lrs.Spec.Replicas) - unschedulable
+				if int64(*lrs.Spec.Replicas) < int64(podStatus[cluster.Name].Total) {
+					glog.V(4).Infof("replicaset: %v/%v/%v, spec: %v, pods: %v, %v, %v", cluster.Name, lrs.Namespace, lrs.Name, *lrs.Spec.Replicas,
+						podStatus[cluster.Name].Total, podStatus[cluster.Name].RunningAndReady, podStatus[cluster.Name].Unschedulable)
+				}
+				estimatedCapacity[cluster.Name] = maxInt64(int64(*lrs.Spec.Replicas), int64(podStatus[cluster.Name].Total)) - unschedulable
 			}
 		}
 	}
@@ -581,4 +585,11 @@ func (frsc *ReplicaSetController) deleteReplicaSet(key string) error {
 		}
 	}
 	return frsc.fedUpdater.Update(operations, updateTimeout)
+}
+
+func maxInt64(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

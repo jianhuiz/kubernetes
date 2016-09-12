@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/golang/glog"
 	"k8s.io/kubernetes/federation/pkg/federation-controller/util"
 	api "k8s.io/kubernetes/pkg/api"
 	unversioned "k8s.io/kubernetes/pkg/api/unversioned"
@@ -73,6 +74,9 @@ func AnalysePods(replicaSet *v1beta1.ReplicaSet, allPods []util.FederatedObject,
 						condition.Reason == "Unschedulable" &&
 						condition.LastTransitionTime.Add(UnschedulableThreshold).Before(currentTime) {*/
 
+						if condition.Reason != "Unschedulable" {
+							glog.V(4).Infof("pod %v, status: %v, %v, %v, not scheduled condition: %v, %v", pod.Name, pod.Status.Phase, pod.Status.Reason, pod.Status.Message, condition.Reason, condition.Message)
+						}
 						status.Unschedulable++
 					}
 				}
