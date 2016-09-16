@@ -344,9 +344,12 @@ func (frsc *ReplicaSetController) worker() {
 		if quit {
 			return
 		}
-		key := item.(string)
-		status, err := frsc.reconcileReplicaSet(key)
-		frsc.replicasetWorkQueue.Done(item)
+		key, status, err := func() (string, reconciliationStatus, error) {
+			key := item.(string)
+			defer frsc.replicasetWorkQueue.Done(item)
+			status, err := frsc.reconcileReplicaSet(key)
+			return key, status, err
+		}()
 		if err != nil {
 			glog.Errorf("Error syncing cluster controller: %v", err)
 			frsc.deliverReplicaSetByKey(key, 0, true)
@@ -575,8 +578,8 @@ func (frsc *ReplicaSetController) deleteReplicaSet(key string) error {
 		if err != nil {
 			return err
 		}
-		lrs := lrsObj.(*extensionsv1.ReplicaSet)
-		if exists {
+		lrs, ok := lrsObj.(*extensionsv1.ReplicaSet)
+		if exists && ok && lrs != nil {
 			operations = append(operations, fedutil.FederatedOperation{
 				Type:        fedutil.OperationTypeDelete,
 				Obj:         lrs,
