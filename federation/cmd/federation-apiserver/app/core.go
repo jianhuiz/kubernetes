@@ -30,10 +30,11 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/storage"
-	"k8s.io/kubernetes/federation/apis/core"
-	_ "k8s.io/kubernetes/federation/apis/core/install"
-	corev1 "k8s.io/kubernetes/federation/apis/core/v1"
+	apiv1 "k8s.io/kubernetes/pkg/api/v1"
+	fedclient "k8s.io/kubernetes/federation/client/clientset_generated/federation_clientset"
 	"k8s.io/kubernetes/federation/cmd/federation-apiserver/app/options"
+	nodestore "k8s.io/kubernetes/federation/registry/core/node/storage"
+	podstore "k8s.io/kubernetes/federation/registry/core/pod/storage"
 	"k8s.io/kubernetes/pkg/api"
 	configmapstore "k8s.io/kubernetes/pkg/registry/core/configmap/storage"
 	eventstore "k8s.io/kubernetes/pkg/registry/core/event/storage"
@@ -43,6 +44,20 @@ import (
 )
 
 func installCoreAPIs(s *options.ServerRunOptions, g *genericapiserver.GenericAPIServer, optsGetter generic.RESTOptionsGetter, apiResourceConfigSource storage.APIResourceConfigSource) {
+	podsStorageFn := func() map[string]rest.Storage {
+		podStore, podStatusStore := podstore.NewREST(optsGetter, fedclient.NewForConfigOrDie(g.LoopbackClientConfig))
+		return map[string]rest.Storage{
+			"pods":        podStore,
+			"pods/status": podStatusStore,
+		}
+	}
+	nodeStorageFn := func() map[string]rest.Storage {
+		nodeStore, nodeStatusStore := nodestore.NewREST(optsGetter, fedclient.NewForConfigOrDie(g.LoopbackClientConfig))
+		return map[string]rest.Storage{
+			"nodes":        nodeStore,
+			"nodes/status": nodeStatusStore,
+		}
+	}
 	servicesStorageFn := func() map[string]rest.Storage {
 		serviceStore, serviceStatusStore := servicestore.NewREST(optsGetter)
 		return map[string]rest.Storage{
@@ -77,26 +92,28 @@ func installCoreAPIs(s *options.ServerRunOptions, g *genericapiserver.GenericAPI
 		}
 	}
 	resourcesStorageMap := map[string]getResourcesStorageFunc{
+		"pods":       podsStorageFn,
+		"nodes":      nodeStorageFn,
 		"services":   servicesStorageFn,
 		"namespaces": namespacesStorageFn,
 		"secrets":    secretsStorageFn,
 		"configmaps": configmapsStorageFn,
 		"events":     eventsStorageFn,
 	}
-	shouldInstallGroup, resources := enabledResources(corev1.SchemeGroupVersion, resourcesStorageMap, apiResourceConfigSource)
+	shouldInstallGroup, resources := enabledResources(apiv1.SchemeGroupVersion, resourcesStorageMap, apiResourceConfigSource)
 	if !shouldInstallGroup {
 		return
 	}
-	coreGroupMeta := api.Registry.GroupOrDie(core.GroupName)
+	coreGroupMeta := api.Registry.GroupOrDie(api.GroupName)
 	apiGroupInfo := genericapiserver.APIGroupInfo{
 		GroupMeta: *coreGroupMeta,
 		VersionedResourcesStorageMap: map[string]map[string]rest.Storage{
-			corev1.SchemeGroupVersion.Version: resources,
+			apiv1.SchemeGroupVersion.Version: resources,
 		},
-		OptionsExternalVersion: &api.Registry.GroupOrDie(core.GroupName).GroupVersion,
-		Scheme:                 core.Scheme,
-		ParameterCodec:         core.ParameterCodec,
-		NegotiatedSerializer:   core.Codecs,
+		OptionsExternalVersion: &api.Registry.GroupOrDie(api.GroupName).GroupVersion,
+		Scheme:                 api.Scheme,
+		ParameterCodec:         api.ParameterCodec,
+		NegotiatedSerializer:   api.Codecs,
 	}
 	if err := g.InstallLegacyAPIGroup(genericapiserver.DefaultLegacyAPIPrefix, &apiGroupInfo); err != nil {
 		glog.Fatalf("Error in registering group version: %+v.\n Error: %v\n", apiGroupInfo, err)

@@ -27,6 +27,8 @@ import (
 type ListOptions struct {
 	metav1.TypeMeta
 
+	// Used in federation, selects clusters to list the objects in
+	ClusterSelector labels.Selector
 	// A selector based on labels
 	LabelSelector labels.Selector
 	// A selector based on fields
