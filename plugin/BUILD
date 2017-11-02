@@ -23,6 +23,7 @@ filegroup(
         "//plugin/pkg/admission/imagepolicy:all-srcs",
         "//plugin/pkg/admission/initialization:all-srcs",
         "//plugin/pkg/admission/initialresources:all-srcs",
+        "//plugin/pkg/admission/lastupdatedby:all-srcs",
         "//plugin/pkg/admission/limitranger:all-srcs",
         "//plugin/pkg/admission/namespace/autoprovision:all-srcs",
         "//plugin/pkg/admission/namespace/exists:all-srcs",
