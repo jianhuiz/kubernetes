@@ -297,6 +297,7 @@ func defaultResourceConfig() *serverstorage.ResourceConfig {
 		apiv1.SchemeGroupVersion.WithResource("namespaces"),
 		apiv1.SchemeGroupVersion.WithResource("events"),
 		apiv1.SchemeGroupVersion.WithResource("configmaps"),
+		apiv1.SchemeGroupVersion.WithResource("serviceaccounts"),
 	)
 	// All extension resources except these are disabled by default.
 	rc.EnableResources(

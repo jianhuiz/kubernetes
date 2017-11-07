@@ -88,6 +88,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&api.EventList{},
 		&api.ConfigMap{},
 		&api.ConfigMapList{},
+		&api.ServiceAccount{},
+		&api.ServiceAccountList{},
 	)
 
 	// Register Unversioned types under their own special group

@@ -40,6 +40,7 @@ import (
 	namespacestore "k8s.io/kubernetes/pkg/registry/core/namespace/storage"
 	secretstore "k8s.io/kubernetes/pkg/registry/core/secret/storage"
 	servicestore "k8s.io/kubernetes/pkg/registry/core/service/storage"
+	serviceaccountstore "k8s.io/kubernetes/pkg/registry/core/serviceaccount/storage"
 )
 
 func installCoreAPIs(s *options.ServerRunOptions, g *genericapiserver.GenericAPIServer, optsGetter generic.RESTOptionsGetter, apiResourceConfigSource storage.APIResourceConfigSource) {
@@ -76,12 +77,20 @@ func installCoreAPIs(s *options.ServerRunOptions, g *genericapiserver.GenericAPI
 			"events": eventStore,
 		}
 	}
+	serviceAccountStorageFn := func() map[string]rest.Storage {
+		serviceAccountStore := serviceaccountstore.NewREST(optsGetter)
+		return map[string]rest.Storage{
+			"serviceaccounts": serviceAccountStore,
+		}
+	}
+
 	resourcesStorageMap := map[string]getResourcesStorageFunc{
-		"services":   servicesStorageFn,
-		"namespaces": namespacesStorageFn,
-		"secrets":    secretsStorageFn,
-		"configmaps": configmapsStorageFn,
-		"events":     eventsStorageFn,
+		"services":        servicesStorageFn,
+		"namespaces":      namespacesStorageFn,
+		"secrets":         secretsStorageFn,
+		"configmaps":      configmapsStorageFn,
+		"events":          eventsStorageFn,
+		"serviceaccounts": serviceAccountStorageFn,
 	}
 	shouldInstallGroup, resources := enabledResources(corev1.SchemeGroupVersion, resourcesStorageMap, apiResourceConfigSource)
 	if !shouldInstallGroup {
