@@ -47,6 +47,7 @@ import (
 	federationv1beta1 "k8s.io/kubernetes/federation/apis/federation/v1beta1"
 	"k8s.io/kubernetes/federation/cmd/federation-apiserver/app/options"
 	"k8s.io/kubernetes/pkg/api"
+	rbac "k8s.io/kubernetes/pkg/apis/rbac"
 	rbacv1 "k8s.io/kubernetes/pkg/apis/rbac/v1"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	informers "k8s.io/kubernetes/pkg/client/informers/informers_generated/internalversion"
@@ -315,6 +316,7 @@ func defaultResourceConfig() *serverstorage.ResourceConfig {
 		appsv1beta2.SchemeGroupVersion.WithResource("replicasets"),
 	)
 	// All rbac resources enabled
+	rc.EnableVersions(rbac.SchemeGroupVersion)
 	rc.EnableVersions(rbacv1.SchemeGroupVersion)
 	return rc
 }
