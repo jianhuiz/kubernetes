@@ -47,6 +47,7 @@ import (
 	federationv1beta1 "k8s.io/kubernetes/federation/apis/federation/v1beta1"
 	"k8s.io/kubernetes/federation/cmd/federation-apiserver/app/options"
 	"k8s.io/kubernetes/pkg/api"
+	rbacv1 "k8s.io/kubernetes/pkg/apis/rbac/v1"
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	informers "k8s.io/kubernetes/pkg/client/informers/informers_generated/internalversion"
 	"k8s.io/kubernetes/pkg/generated/openapi"
@@ -267,6 +268,7 @@ func NonBlockingRun(s *options.ServerRunOptions, stopCh <-chan struct{}) error {
 	installExtensionsAPIs(m, genericConfig.RESTOptionsGetter, apiResourceConfigSource)
 	installBatchAPIs(m, genericConfig.RESTOptionsGetter, apiResourceConfigSource)
 	installAutoscalingAPIs(m, genericConfig.RESTOptionsGetter, apiResourceConfigSource)
+	installRBACAPIs(m, apiAuthorizer, genericConfig.RESTOptionsGetter, apiResourceConfigSource)
 
 	// run the insecure server now
 	if insecureServingOptions != nil {
@@ -312,6 +314,8 @@ func defaultResourceConfig() *serverstorage.ResourceConfig {
 		appsv1beta2.SchemeGroupVersion.WithResource("deployments"),
 		appsv1beta2.SchemeGroupVersion.WithResource("replicasets"),
 	)
+	// All rbac resources enabled
+	rc.EnableVersions(rbacv1.SchemeGroupVersion)
 	return rc
 }
 
