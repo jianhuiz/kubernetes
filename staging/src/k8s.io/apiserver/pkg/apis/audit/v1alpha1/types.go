@@ -62,19 +62,24 @@ type Stage string
 const (
 	// The stage for events generated as soon as the audit handler receives the request, and before it
 	// is delegated down the handler chain.
-	StageRequestReceived = "RequestReceived"
+	StageRequestReceived Stage = "RequestReceived"
 	// The stage for events generated once the response headers are sent, but before the response body
 	// is sent. This stage is only generated for long-running requests (e.g. watch).
-	StageResponseStarted = "ResponseStarted"
+	StageResponseStarted Stage = "ResponseStarted"
 	// The stage for events generated once the response body has been completed, and no more bytes
 	// will be sent.
-	StageResponseComplete = "ResponseComplete"
+	StageResponseComplete Stage = "ResponseComplete"
 	// The stage for events generated when a panic occurred.
-	StagePanic = "Panic"
+	StagePanic Stage = "Panic"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +k8s:prerelease-lifecycle-gen:introduced=1.7
+// +k8s:prerelease-lifecycle-gen:deprecated=1.21
+// +k8s:prerelease-lifecycle-gen:replacement=audit.k8s.io,v1,Event
 
+// DEPRECATED - This group version of Event is deprecated by audit.k8s.io/v1/Event. See the release notes for
+// more information.
 // Event captures all the information that can be included in an API audit log.
 type Event struct {
 	metav1.TypeMeta `json:",inline"`
@@ -105,6 +110,10 @@ type Event struct {
 	// Source IPs, from where the request originated and intermediate proxies.
 	// +optional
 	SourceIPs []string `json:"sourceIPs,omitempty" protobuf:"bytes,10,rep,name=sourceIPs"`
+	// UserAgent records the user agent string reported by the client.
+	// Note that the UserAgent is provided by the client, and must not be trusted.
+	// +optional
+	UserAgent string `json:"userAgent,omitempty" protobuf:"bytes,18,opt,name=userAgent"`
 	// Object reference this request is targeted at.
 	// Does not apply for List-type requests, or non-resource requests.
 	// +optional
@@ -126,9 +135,27 @@ type Event struct {
 	// at Response Level.
 	// +optional
 	ResponseObject *runtime.Unknown `json:"responseObject,omitempty" protobuf:"bytes,14,opt,name=responseObject"`
+	// Time the request reached the apiserver.
+	// +optional
+	RequestReceivedTimestamp metav1.MicroTime `json:"requestReceivedTimestamp" protobuf:"bytes,15,opt,name=requestReceivedTimestamp"`
+	// Time the request reached current audit stage.
+	// +optional
+	StageTimestamp metav1.MicroTime `json:"stageTimestamp" protobuf:"bytes,16,opt,name=stageTimestamp"`
+
+	// Annotations is an unstructured key value map stored with an audit event that may be set by
+	// plugins invoked in the request serving chain, including authentication, authorization and
+	// admission plugins. Note that these annotations are for the audit event, and do not correspond
+	// to the metadata.annotations of the submitted object. Keys should uniquely identify the informing
+	// component to avoid name collisions (e.g. podsecuritypolicy.admission.k8s.io/policy). Values
+	// should be short. Annotations are included in the Metadata level.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty" protobuf:"bytes,17,rep,name=annotations"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +k8s:prerelease-lifecycle-gen:introduced=1.7
+// +k8s:prerelease-lifecycle-gen:deprecated=1.21
+// +k8s:prerelease-lifecycle-gen:replacement=audit.k8s.io,v1,EventList
 
 // EventList is a list of audit Events.
 type EventList struct {
@@ -140,7 +167,12 @@ type EventList struct {
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +k8s:prerelease-lifecycle-gen:introduced=1.7
+// +k8s:prerelease-lifecycle-gen:deprecated=1.21
+// +k8s:prerelease-lifecycle-gen:replacement=audit.k8s.io,v1,Policy
 
+// DEPRECATED - This group version of Policy is deprecated by audit.k8s.io/v1/Policy. See the release notes for
+// more information.
 // Policy defines the configuration of audit logging, and the rules for how different request
 // categories are logged.
 type Policy struct {
@@ -154,9 +186,17 @@ type Policy struct {
 	// The default audit level is None, but can be overridden by a catch-all rule at the end of the list.
 	// PolicyRules are strictly ordered.
 	Rules []PolicyRule `json:"rules" protobuf:"bytes,2,rep,name=rules"`
+
+	// OmitStages is a list of stages for which no events are created. Note that this can also
+	// be specified per rule in which case the union of both are omitted.
+	// +optional
+	OmitStages []Stage `json:"omitStages,omitempty" protobuf:"bytes,3,rep,name=omitStages"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +k8s:prerelease-lifecycle-gen:introduced=1.7
+// +k8s:prerelease-lifecycle-gen:deprecated=1.21
+// +k8s:prerelease-lifecycle-gen:replacement=audit.k8s.io,v1,PolicyList
 
 // PolicyList is a list of audit Policies.
 type PolicyList struct {
@@ -209,8 +249,10 @@ type PolicyRule struct {
 	// +optional
 	NonResourceURLs []string `json:"nonResourceURLs,omitempty" protobuf:"bytes,7,rep,name=nonResourceURLs"`
 
-	// OmitStages specify events generated in which stages will not be emitted to backend.
+	// OmitStages is a list of stages for which no events are created. Note that this can also
+	// be specified policy wide in which case the union of both are omitted.
 	// An empty list means no restrictions will apply.
+	// +optional
 	OmitStages []Stage `json:"omitStages,omitempty" protobuf:"bytes,8,rep,name=omitStages"`
 }
 
@@ -220,10 +262,19 @@ type GroupResources struct {
 	// The empty string represents the core API group.
 	// +optional
 	Group string `json:"group,omitempty" protobuf:"bytes,1,opt,name=group"`
-	// Resources is a list of resources within the API group. Subresources are
-	// matched using a "/" to indicate the subresource. For example, "pods/logs"
-	// would match request to the logs subresource of pods. The top level resource
-	// does not match subresources, "pods" doesn't match "pods/logs".
+	// Resources is a list of resources this rule applies to.
+	//
+	// For example:
+	// 'pods' matches pods.
+	// 'pods/log' matches the log subresource of pods.
+	// '*' matches all resources and their subresources.
+	// 'pods/*' matches all subresources of pods.
+	// '*/scale' matches all scale subresources.
+	//
+	// If wildcard is present, the validation rule will ensure resources do not
+	// overlap with each other.
+	//
+	// An empty list implies all resources and subresources in this API groups apply.
 	// +optional
 	Resources []string `json:"resources,omitempty" protobuf:"bytes,2,rep,name=resources"`
 	// ResourceNames is a list of resource instance names that the policy matches.

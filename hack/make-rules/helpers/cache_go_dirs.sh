@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Copyright 2014 The Kubernetes Authors.
 #
@@ -28,7 +28,7 @@ if [[ -z "${1:-}" ]]; then
 fi
 CACHE="$1"; shift
 
-trap "rm -f '${CACHE}'" HUP INT TERM ERR
+trap 'rm -f "${CACHE}"' HUP INT TERM ERR
 
 # This is a partial 'find' command.  The caller is expected to pass the
 # remaining arguments.
@@ -36,38 +36,37 @@ trap "rm -f '${CACHE}'" HUP INT TERM ERR
 # Example:
 #   kfind -type f -name foobar.go
 function kfind() {
-    # include the "special" vendor directories which are actually part
-    # of the Kubernetes source tree - generators will use these for
-    # including certain core API concepts.
-    find -H . ./vendor/k8s.io/apimachinery ./vendor/k8s.io/apiserver ./vendor/k8s.io/kube-aggregator ./vendor/k8s.io/apiextensions-apiserver ./vendor/k8s.io/metrics ./vendor/k8s.io/sample-apiserver ./vendor/k8s.io/api ./vendor/k8s.io/client-go ./vendor/k8s.io/code-generator \
+    # We want to include the "special" vendor directories which are actually
+    # part of the Kubernetes source tree (./staging/*) but we need them to be
+    # named as their ./vendor/* equivalents.  Also, we  do not want all of
+    # ./vendor or even all of ./vendor/k8s.io.
+    find -H .                      \
         \(                         \
         -not \(                    \
             \(                     \
-                -path ./vendor -o  \
-                -path ./staging -o \
-                -path ./_\* -o     \
-                -path ./.\* -o     \
-                -path ./docs -o    \
-                -path ./examples   \
+                -name '_*' -o      \
+                -name '.[^.]*' -o  \
+                -path './vendor'   \
             \) -prune              \
         \)                         \
         \)                         \
-        "$@"
+        "$@"                       \
+        | sed 's|^./staging/src|vendor|'
 }
 
-NEED_FIND=true
 # It's *significantly* faster to check whether any directories are newer than
 # the cache than to blindly rebuild it.
-if [[ -f "${CACHE}" ]]; then
+if [[ -f "${CACHE}" && -n "${CACHE}" ]]; then
     N=$(kfind -type d -newer "${CACHE}" -print -quit | wc -l)
-    [[ "${N}" == 0 ]] && NEED_FIND=false
+    if [[ "${N}" == 0 ]]; then
+        cat "${CACHE}"
+        exit
+    fi
 fi
-mkdir -p $(dirname "${CACHE}")
-if $("${NEED_FIND}"); then
-    kfind -type f -name \*.go  \
-        | sed 's|/[^/]*$||'    \
-        | sed 's|^./||'        \
-        | LC_ALL=C sort -u     \
-        > "${CACHE}"
-fi
-cat "${CACHE}"
+
+mkdir -p "$(dirname "${CACHE}")"
+kfind -type f -name \*.go  \
+    | sed 's|/[^/]*$||'    \
+    | sed 's|^./||'        \
+    | LC_ALL=C sort -u     \
+    | tee "${CACHE}"

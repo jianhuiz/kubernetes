@@ -1,5 +1,8 @@
 package storage
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 import (
 	"bytes"
 	"encoding/json"
@@ -83,13 +86,13 @@ func (t *Table) Get(timeout uint, ml MetadataLevel) error {
 	if err != nil {
 		return err
 	}
-	defer readAndCloseBody(resp.body)
+	defer resp.Body.Close()
 
-	if err = checkRespCode(resp.statusCode, []int{http.StatusOK}); err != nil {
+	if err = checkRespCode(resp, []int{http.StatusOK}); err != nil {
 		return err
 	}
 
-	respBody, err := ioutil.ReadAll(resp.body)
+	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -129,20 +132,20 @@ func (t *Table) Create(timeout uint, ml MetadataLevel, options *TableOptions) er
 	if err != nil {
 		return err
 	}
-	defer readAndCloseBody(resp.body)
+	defer resp.Body.Close()
 
 	if ml == EmptyPayload {
-		if err := checkRespCode(resp.statusCode, []int{http.StatusNoContent}); err != nil {
+		if err := checkRespCode(resp, []int{http.StatusNoContent}); err != nil {
 			return err
 		}
 	} else {
-		if err := checkRespCode(resp.statusCode, []int{http.StatusCreated}); err != nil {
+		if err := checkRespCode(resp, []int{http.StatusCreated}); err != nil {
 			return err
 		}
 	}
 
 	if ml != EmptyPayload {
-		data, err := ioutil.ReadAll(resp.body)
+		data, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return err
 		}
@@ -172,13 +175,9 @@ func (t *Table) Delete(timeout uint, options *TableOptions) error {
 	if err != nil {
 		return err
 	}
-	defer readAndCloseBody(resp.body)
+	defer drainRespBody(resp)
 
-	if err := checkRespCode(resp.statusCode, []int{http.StatusNoContent}); err != nil {
-		return err
-
-	}
-	return nil
+	return checkRespCode(resp, []int{http.StatusNoContent})
 }
 
 // QueryOptions includes options for a query entities operation.
@@ -259,12 +258,9 @@ func (t *Table) SetPermissions(tap []TableAccessPolicy, timeout uint, options *T
 	if err != nil {
 		return err
 	}
-	defer readAndCloseBody(resp.body)
+	defer drainRespBody(resp)
 
-	if err := checkRespCode(resp.statusCode, []int{http.StatusNoContent}); err != nil {
-		return err
-	}
-	return nil
+	return checkRespCode(resp, []int{http.StatusNoContent})
 }
 
 func generateTableACLPayload(policies []TableAccessPolicy) (io.Reader, int, error) {
@@ -294,14 +290,14 @@ func (t *Table) GetPermissions(timeout int, options *TableOptions) ([]TableAcces
 	if err != nil {
 		return nil, err
 	}
-	defer resp.body.Close()
+	defer resp.Body.Close()
 
-	if err = checkRespCode(resp.statusCode, []int{http.StatusOK}); err != nil {
+	if err = checkRespCode(resp, []int{http.StatusOK}); err != nil {
 		return nil, err
 	}
 
 	var ap AccessPolicy
-	err = xmlUnmarshal(resp.body, &ap.SignedIdentifiersList)
+	err = xmlUnmarshal(resp.Body, &ap.SignedIdentifiersList)
 	if err != nil {
 		return nil, err
 	}
@@ -318,13 +314,13 @@ func (t *Table) queryEntities(uri string, headers map[string]string, ml Metadata
 	if err != nil {
 		return nil, err
 	}
-	defer resp.body.Close()
+	defer resp.Body.Close()
 
-	if err = checkRespCode(resp.statusCode, []int{http.StatusOK}); err != nil {
+	if err = checkRespCode(resp, []int{http.StatusOK}); err != nil {
 		return nil, err
 	}
 
-	data, err := ioutil.ReadAll(resp.body)
+	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +335,7 @@ func (t *Table) queryEntities(uri string, headers map[string]string, ml Metadata
 	}
 	entities.table = t
 
-	contToken := extractContinuationTokenFromHeaders(resp.headers)
+	contToken := extractContinuationTokenFromHeaders(resp.Header)
 	if contToken == nil {
 		entities.NextLink = nil
 	} else {
@@ -348,8 +344,12 @@ func (t *Table) queryEntities(uri string, headers map[string]string, ml Metadata
 			return nil, err
 		}
 		v := originalURI.Query()
-		v.Set(nextPartitionKeyQueryParameter, contToken.NextPartitionKey)
-		v.Set(nextRowKeyQueryParameter, contToken.NextRowKey)
+		if contToken.NextPartitionKey != "" {
+			v.Set(nextPartitionKeyQueryParameter, contToken.NextPartitionKey)
+		}
+		if contToken.NextRowKey != "" {
+			v.Set(nextRowKeyQueryParameter, contToken.NextRowKey)
+		}
 		newURI := t.tsc.client.getEndpoint(tableServiceName, t.buildPath(), v)
 		entities.NextLink = &newURI
 		entities.ml = ml
@@ -364,7 +364,7 @@ func extractContinuationTokenFromHeaders(h http.Header) *continuationToken {
 		NextRowKey:       h.Get(headerNextRowKey),
 	}
 
-	if ct.NextPartitionKey != "" && ct.NextRowKey != "" {
+	if ct.NextPartitionKey != "" || ct.NextRowKey != "" {
 		return &ct
 	}
 	return nil

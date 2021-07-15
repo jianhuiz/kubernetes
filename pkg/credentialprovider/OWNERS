@@ -1,6 +1,7 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 approvers:
 - deads2k
-- erictune
 - liggitt
 reviewers:
 - thockin
@@ -14,12 +15,10 @@ reviewers:
 - pmorie
 - dchen1107
 - justinsb
-- eparis
 - dims
 - resouer
-- mbohlool
-- david-mcmahon
 - mfojtik
 - therc
-- lixiaobing10051267
-- goltermann
+- andrewsykim
+- mcrute
+- andyzhangx

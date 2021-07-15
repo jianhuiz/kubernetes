@@ -18,93 +18,135 @@ package upgrade
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 
-	kubeadmapiext "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1alpha1"
+	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
+	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
 )
+
+func TestEnforceRequirements(t *testing.T) {
+	tcases := []struct {
+		name          string
+		newK8sVersion string
+		dryRun        bool
+		flags         applyPlanFlags
+		expectedErr   bool
+	}{
+		{
+			name:        "Fail pre-flight check",
+			expectedErr: true,
+		},
+		{
+			name: "Bogus preflight check disabled when also 'all' is specified",
+			flags: applyPlanFlags{
+				ignorePreflightErrors: []string{"bogusvalue", "all"},
+			},
+			expectedErr: true,
+		},
+		{
+			name: "Fail to create client",
+			flags: applyPlanFlags{
+				ignorePreflightErrors: []string{"all"},
+			},
+			expectedErr: true,
+		},
+	}
+	for _, tt := range tcases {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, _, err := enforceRequirements(&tt.flags, nil, tt.dryRun, false)
+
+			if err == nil && tt.expectedErr {
+				t.Error("Expected error, but got success")
+			}
+			if err != nil && !tt.expectedErr {
+				t.Errorf("Unexpected error: %+v", err)
+			}
+		})
+	}
+}
 
 func TestPrintConfiguration(t *testing.T) {
 	var tests = []struct {
-		cfg           *kubeadmapiext.MasterConfiguration
+		name          string
+		cfg           *kubeadmapi.ClusterConfiguration
 		buf           *bytes.Buffer
 		expectedBytes []byte
 	}{
 		{
+			name:          "config is nil",
 			cfg:           nil,
 			expectedBytes: []byte(""),
 		},
 		{
-			cfg: &kubeadmapiext.MasterConfiguration{
+			name: "cluster config with local Etcd",
+			cfg: &kubeadmapi.ClusterConfiguration{
 				KubernetesVersion: "v1.7.1",
+				Etcd: kubeadmapi.Etcd{
+					Local: &kubeadmapi.LocalEtcd{
+						DataDir: "/some/path",
+					},
+				},
 			},
-			expectedBytes: []byte(`[upgrade/config] Configuration used:
-	api:
-	  advertiseAddress: ""
-	  bindPort: 0
-	certificatesDir: ""
-	cloudProvider: ""
+			expectedBytes: []byte(fmt.Sprintf(`[upgrade/config] Configuration used:
+	apiServer: {}
+	apiVersion: %s
+	controllerManager: {}
+	dns: {}
 	etcd:
-	  caFile: ""
-	  certFile: ""
-	  dataDir: ""
-	  endpoints: null
-	  image: ""
-	  keyFile: ""
-	imageRepository: ""
+	  local:
+	    dataDir: /some/path
+	kind: ClusterConfiguration
 	kubernetesVersion: v1.7.1
-	networking:
-	  dnsDomain: ""
-	  podSubnet: ""
-	  serviceSubnet: ""
-	nodeName: ""
-	token: ""
-	tokenTTL: 0s
-	unifiedControlPlaneImage: ""
-`),
+	networking: {}
+	scheduler: {}
+`, kubeadmapiv1.SchemeGroupVersion.String())),
 		},
 		{
-			cfg: &kubeadmapiext.MasterConfiguration{
+			name: "cluster config with ServiceSubnet and external Etcd",
+			cfg: &kubeadmapi.ClusterConfiguration{
 				KubernetesVersion: "v1.7.1",
-				Networking: kubeadmapiext.Networking{
+				Networking: kubeadmapi.Networking{
 					ServiceSubnet: "10.96.0.1/12",
+				},
+				Etcd: kubeadmapi.Etcd{
+					External: &kubeadmapi.ExternalEtcd{
+						Endpoints: []string{"https://one-etcd-instance:2379"},
+					},
 				},
 			},
 			expectedBytes: []byte(`[upgrade/config] Configuration used:
-	api:
-	  advertiseAddress: ""
-	  bindPort: 0
-	certificatesDir: ""
-	cloudProvider: ""
+	apiServer: {}
+	apiVersion: ` + kubeadmapiv1.SchemeGroupVersion.String() + `
+	controllerManager: {}
+	dns: {}
 	etcd:
-	  caFile: ""
-	  certFile: ""
-	  dataDir: ""
-	  endpoints: null
-	  image: ""
-	  keyFile: ""
-	imageRepository: ""
+	  external:
+	    caFile: ""
+	    certFile: ""
+	    endpoints:
+	    - https://one-etcd-instance:2379
+	    keyFile: ""
+	kind: ClusterConfiguration
 	kubernetesVersion: v1.7.1
 	networking:
-	  dnsDomain: ""
-	  podSubnet: ""
 	  serviceSubnet: 10.96.0.1/12
-	nodeName: ""
-	token: ""
-	tokenTTL: 0s
-	unifiedControlPlaneImage: ""
+	scheduler: {}
 `),
 		},
 	}
 	for _, rt := range tests {
-		rt.buf = bytes.NewBufferString("")
-		printConfiguration(rt.cfg, rt.buf)
-		actualBytes := rt.buf.Bytes()
-		if !bytes.Equal(actualBytes, rt.expectedBytes) {
-			t.Errorf(
-				"failed PrintConfiguration:\n\texpected: %q\n\t  actual: %q",
-				string(rt.expectedBytes),
-				string(actualBytes),
-			)
-		}
+		t.Run(rt.name, func(t *testing.T) {
+			rt.buf = bytes.NewBufferString("")
+			printConfiguration(rt.cfg, rt.buf)
+			actualBytes := rt.buf.Bytes()
+			if !bytes.Equal(actualBytes, rt.expectedBytes) {
+				t.Errorf(
+					"failed PrintConfiguration:\n\texpected: %q\n\t  actual: %q",
+					string(rt.expectedBytes),
+					string(actualBytes),
+				)
+			}
+		})
 	}
 }

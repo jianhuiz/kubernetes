@@ -19,18 +19,18 @@ package remote
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
 
-	"github.com/golang/glog"
+	"k8s.io/klog/v2"
 )
 
 // utils.go contains functions used across test suites.
 
 const (
-	cniRelease       = "0799f5732f2a11b329d9e3d51b9c8f2e3759f2ff"
-	cniDirectory     = "cni" // The CNI tarball creates the "bin" directory under "cni".
+	cniVersion       = "v0.9.1"
+	cniArch          = "amd64"
+	cniDirectory     = "cni/bin" // The CNI tarball places binaries under directory under "cni/bin".
 	cniConfDirectory = "cni/net.d"
-	cniURL           = "https://storage.googleapis.com/kubernetes-release/network-plugins/cni-" + cniRelease + ".tar.gz"
+	cniURL           = "https://storage.googleapis.com/k8s-artifacts-cni/release/" + cniVersion + "/" + "cni-plugins-linux-" + cniArch + "-" + cniVersion + ".tgz"
 )
 
 const cniConfig = `{
@@ -51,11 +51,11 @@ const cniConfig = `{
 // Install the cni plugin and add basic bridge configuration to the
 // configuration directory.
 func setupCNI(host, workspace string) error {
-	glog.V(2).Infof("Install CNI on %q", host)
+	klog.V(2).Infof("Install CNI on %q", host)
 	cniPath := filepath.Join(workspace, cniDirectory)
 	cmd := getSSHCommand(" ; ",
 		fmt.Sprintf("mkdir -p %s", cniPath),
-		fmt.Sprintf("wget -O - %s | tar -xz -C %s", cniURL, cniPath),
+		fmt.Sprintf("curl -s -L %s | tar -xz -C %s", cniURL, cniPath),
 	)
 	if output, err := SSH(host, "sh", "-c", cmd); err != nil {
 		return fmt.Errorf("failed to install cni plugin on %q: %v output: %q", host, err, output)
@@ -64,7 +64,7 @@ func setupCNI(host, workspace string) error {
 	// The added CNI network config is not needed for kubenet. It is only
 	// used when testing the CNI network plugin, but is added in both cases
 	// for consistency and simplicity.
-	glog.V(2).Infof("Adding CNI configuration on %q", host)
+	klog.V(2).Infof("Adding CNI configuration on %q", host)
 	cniConfigPath := filepath.Join(workspace, cniConfDirectory)
 	cmd = getSSHCommand(" ; ",
 		fmt.Sprintf("mkdir -p %s", cniConfigPath),
@@ -78,42 +78,28 @@ func setupCNI(host, workspace string) error {
 
 // configureFirewall configures iptable firewall rules.
 func configureFirewall(host string) error {
-	glog.V(2).Infof("Configure iptables firewall rules on %q", host)
-	// TODO: consider calling bootstrap script to configure host based on OS
-	output, err := SSH(host, "iptables", "-L", "INPUT")
+	klog.V(2).Infof("Configure iptables firewall rules on %q", host)
+
+	// Since the goal is to enable connectivity without taking into account current rule,
+	// we can just prepend the accept rules directly without any check
+	cmd := getSSHCommand("&&",
+		"iptables -I INPUT 1 -w -p tcp -j ACCEPT",
+		"iptables -I INPUT 1 -w -p udp -j ACCEPT",
+		"iptables -I INPUT 1 -w -p icmp -j ACCEPT",
+		"iptables -I FORWARD 1 -w -p tcp -j ACCEPT",
+		"iptables -I FORWARD 1 -w -p udp -j ACCEPT",
+		"iptables -I FORWARD 1 -w -p icmp -j ACCEPT",
+	)
+	output, err := SSH(host, "sh", "-c", cmd)
 	if err != nil {
-		return fmt.Errorf("failed to get iptables INPUT on %q: %v output: %q", host, err, output)
-	}
-	if strings.Contains(output, "Chain INPUT (policy DROP)") {
-		cmd := getSSHCommand("&&",
-			"(iptables -C INPUT -w -p TCP -j ACCEPT || iptables -A INPUT -w -p TCP -j ACCEPT)",
-			"(iptables -C INPUT -w -p UDP -j ACCEPT || iptables -A INPUT -w -p UDP -j ACCEPT)",
-			"(iptables -C INPUT -w -p ICMP -j ACCEPT || iptables -A INPUT -w -p ICMP -j ACCEPT)")
-		output, err := SSH(host, "sh", "-c", cmd)
-		if err != nil {
-			return fmt.Errorf("failed to configured firewall on %q: %v output: %v", host, err, output)
-		}
-	}
-	output, err = SSH(host, "iptables", "-L", "FORWARD")
-	if err != nil {
-		return fmt.Errorf("failed to get iptables FORWARD on %q: %v output: %q", host, err, output)
-	}
-	if strings.Contains(output, "Chain FORWARD (policy DROP)") {
-		cmd := getSSHCommand("&&",
-			"(iptables -C FORWARD -w -p TCP -j ACCEPT || iptables -A FORWARD -w -p TCP -j ACCEPT)",
-			"(iptables -C FORWARD -w -p UDP -j ACCEPT || iptables -A FORWARD -w -p UDP -j ACCEPT)",
-			"(iptables -C FORWARD -w -p ICMP -j ACCEPT || iptables -A FORWARD -w -p ICMP -j ACCEPT)")
-		output, err = SSH(host, "sh", "-c", cmd)
-		if err != nil {
-			return fmt.Errorf("failed to configured firewall on %q: %v output: %v", host, err, output)
-		}
+		return fmt.Errorf("failed to configured firewall on %q: %v output: %v", host, err, output)
 	}
 	return nil
 }
 
 // cleanupNodeProcesses kills all running node processes may conflict with the test.
 func cleanupNodeProcesses(host string) {
-	glog.V(2).Infof("Killing any existing node processes on %q", host)
+	klog.V(2).Infof("Killing any existing node processes on %q", host)
 	cmd := getSSHCommand(" ; ",
 		"pkill kubelet",
 		"pkill kube-apiserver",

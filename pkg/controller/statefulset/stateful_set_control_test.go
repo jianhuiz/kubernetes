@@ -28,45 +28,56 @@ import (
 	"testing"
 	"time"
 
-	apps "k8s.io/api/apps/v1beta1"
-	"k8s.io/api/core/v1"
+	apps "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
-	appsinformers "k8s.io/client-go/informers/apps/v1beta1"
+	appsinformers "k8s.io/client-go/informers/apps/v1"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	appslisters "k8s.io/client-go/listers/apps/v1beta1"
+	appslisters "k8s.io/client-go/listers/apps/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/history"
+	"k8s.io/kubernetes/pkg/features"
 )
 
 type invariantFunc func(set *apps.StatefulSet, spc *fakeStatefulPodControl) error
 
 func setupController(client clientset.Interface) (*fakeStatefulPodControl, *fakeStatefulSetStatusUpdater, StatefulSetControlInterface, chan struct{}) {
 	informerFactory := informers.NewSharedInformerFactory(client, controller.NoResyncPeriodFunc())
-	spc := newFakeStatefulPodControl(informerFactory.Core().V1().Pods(), informerFactory.Apps().V1beta1().StatefulSets())
-	ssu := newFakeStatefulSetStatusUpdater(informerFactory.Apps().V1beta1().StatefulSets())
-	ssc := NewDefaultStatefulSetControl(spc, ssu, history.NewFakeHistory(informerFactory.Apps().V1beta1().ControllerRevisions()))
+	spc := newFakeStatefulPodControl(informerFactory.Core().V1().Pods(), informerFactory.Apps().V1().StatefulSets(), informerFactory.Apps().V1().ControllerRevisions())
+	ssu := newFakeStatefulSetStatusUpdater(informerFactory.Apps().V1().StatefulSets())
+	recorder := record.NewFakeRecorder(10)
+	ssc := NewDefaultStatefulSetControl(spc, ssu, history.NewFakeHistory(informerFactory.Apps().V1().ControllerRevisions()), recorder)
 
 	stop := make(chan struct{})
 	informerFactory.Start(stop)
 	cache.WaitForCacheSync(
 		stop,
-		informerFactory.Apps().V1beta1().StatefulSets().Informer().HasSynced,
+		informerFactory.Apps().V1().StatefulSets().Informer().HasSynced,
 		informerFactory.Core().V1().Pods().Informer().HasSynced,
-		informerFactory.Apps().V1beta1().ControllerRevisions().Informer().HasSynced,
+		informerFactory.Apps().V1().ControllerRevisions().Informer().HasSynced,
 	)
 	return spc, ssu, ssc, stop
 }
 
 func burst(set *apps.StatefulSet) *apps.StatefulSet {
 	set.Spec.PodManagementPolicy = apps.ParallelPodManagement
+	return set
+}
+
+func setMinReadySeconds(set *apps.StatefulSet, minReadySeconds int32) *apps.StatefulSet {
+	set.Spec.MinReadySeconds = minReadySeconds
 	return set
 }
 
@@ -126,6 +137,12 @@ func CreatesPods(t *testing.T, set *apps.StatefulSet, invariants invariantFunc) 
 	if set.Status.Replicas != 3 {
 		t.Error("Failed to scale statefulset to 3 replicas")
 	}
+	if set.Status.ReadyReplicas != 3 {
+		t.Error("Failed to set ReadyReplicas correctly")
+	}
+	if set.Status.UpdatedReplicas != 3 {
+		t.Error("Failed to set UpdatedReplicas correctly")
+	}
 }
 
 func ScalesUp(t *testing.T, set *apps.StatefulSet, invariants invariantFunc) {
@@ -148,6 +165,12 @@ func ScalesUp(t *testing.T, set *apps.StatefulSet, invariants invariantFunc) {
 	if set.Status.Replicas != 4 {
 		t.Error("Failed to scale statefulset to 4 replicas")
 	}
+	if set.Status.ReadyReplicas != 4 {
+		t.Error("Failed to set readyReplicas correctly")
+	}
+	if set.Status.UpdatedReplicas != 4 {
+		t.Error("Failed to set updatedReplicas correctly")
+	}
 }
 
 func ScalesDown(t *testing.T, set *apps.StatefulSet, invariants invariantFunc) {
@@ -164,6 +187,12 @@ func ScalesDown(t *testing.T, set *apps.StatefulSet, invariants invariantFunc) {
 	}
 	if set.Status.Replicas != 0 {
 		t.Error("Failed to scale statefulset to 0 replicas")
+	}
+	if set.Status.ReadyReplicas != 0 {
+		t.Error("Failed to set readyReplicas correctly")
+	}
+	if set.Status.UpdatedReplicas != 0 {
+		t.Error("Failed to set updatedReplicas correctly")
 	}
 }
 
@@ -200,7 +229,7 @@ func ReplacesPods(t *testing.T, set *apps.StatefulSet, invariants invariantFunc)
 		if err != nil {
 			t.Error(err)
 		}
-		if err = ssc.UpdateStatefulSet(set, pods); err != nil {
+		if _, err = ssc.UpdateStatefulSet(set, pods); err != nil {
 			t.Errorf("Failed to update StatefulSet : %s", err)
 		}
 		set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
@@ -210,14 +239,14 @@ func ReplacesPods(t *testing.T, set *apps.StatefulSet, invariants invariantFunc)
 		if pods, err = spc.setPodRunning(set, i); err != nil {
 			t.Error(err)
 		}
-		if err = ssc.UpdateStatefulSet(set, pods); err != nil {
+		if _, err = ssc.UpdateStatefulSet(set, pods); err != nil {
 			t.Errorf("Failed to update StatefulSet : %s", err)
 		}
 		set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
 		if err != nil {
 			t.Fatalf("Error getting updated StatefulSet: %v", err)
 		}
-		if pods, err = spc.setPodReady(set, i); err != nil {
+		if _, err = spc.setPodReady(set, i); err != nil {
 			t.Error(err)
 		}
 	}
@@ -225,7 +254,7 @@ func ReplacesPods(t *testing.T, set *apps.StatefulSet, invariants invariantFunc)
 	if err != nil {
 		t.Error(err)
 	}
-	if err := ssc.UpdateStatefulSet(set, pods); err != nil {
+	if _, err := ssc.UpdateStatefulSet(set, pods); err != nil {
 		t.Errorf("Failed to update StatefulSet : %s", err)
 	}
 	set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
@@ -249,7 +278,7 @@ func RecreatesFailedPod(t *testing.T, set *apps.StatefulSet, invariants invarian
 	if err != nil {
 		t.Error(err)
 	}
-	if err := ssc.UpdateStatefulSet(set, pods); err != nil {
+	if _, err := ssc.UpdateStatefulSet(set, pods); err != nil {
 		t.Errorf("Error updating StatefulSet %s", err)
 	}
 	if err := invariants(set, spc); err != nil {
@@ -261,7 +290,7 @@ func RecreatesFailedPod(t *testing.T, set *apps.StatefulSet, invariants invarian
 	}
 	pods[0].Status.Phase = v1.PodFailed
 	spc.podsIndexer.Update(pods[0])
-	if err := ssc.UpdateStatefulSet(set, pods); err != nil {
+	if _, err := ssc.UpdateStatefulSet(set, pods); err != nil {
 		t.Errorf("Error updating StatefulSet %s", err)
 	}
 	if err := invariants(set, spc); err != nil {
@@ -282,7 +311,7 @@ func CreatePodFailure(t *testing.T, set *apps.StatefulSet, invariants invariantF
 	defer close(stop)
 	spc.SetCreateStatefulPodError(apierrors.NewInternalError(errors.New("API server failed")), 2)
 
-	if err := scaleUpStatefulSetControl(set, ssc, spc, invariants); !apierrors.IsInternalError(err) {
+	if err := scaleUpStatefulSetControl(set, ssc, spc, invariants); err != nil && isOrHasInternalError(err) {
 		t.Errorf("StatefulSetControl did not return InternalError found %s", err)
 	}
 	if err := scaleUpStatefulSetControl(set, ssc, spc, invariants); err != nil {
@@ -295,6 +324,12 @@ func CreatePodFailure(t *testing.T, set *apps.StatefulSet, invariants invariantF
 	}
 	if set.Status.Replicas != 3 {
 		t.Error("Failed to scale StatefulSet to 3 replicas")
+	}
+	if set.Status.ReadyReplicas != 3 {
+		t.Error("Failed to set readyReplicas correctly")
+	}
+	if set.Status.UpdatedReplicas != 3 {
+		t.Error("Failed to updatedReplicas correctly")
 	}
 }
 
@@ -316,6 +351,12 @@ func UpdatePodFailure(t *testing.T, set *apps.StatefulSet, invariants invariantF
 	if set.Status.Replicas != 3 {
 		t.Error("Failed to scale StatefulSet to 3 replicas")
 	}
+	if set.Status.ReadyReplicas != 3 {
+		t.Error("Failed to set readyReplicas correctly")
+	}
+	if set.Status.UpdatedReplicas != 3 {
+		t.Error("Failed to set updatedReplicas correctly")
+	}
 
 	// now mutate a pod's identity
 	pods, err := spc.podsLister.List(labels.Everything())
@@ -330,7 +371,7 @@ func UpdatePodFailure(t *testing.T, set *apps.StatefulSet, invariants invariantF
 	spc.podsIndexer.Update(pods[0])
 
 	// now it should fail
-	if err := ssc.UpdateStatefulSet(set, pods); !apierrors.IsInternalError(err) {
+	if _, err := ssc.UpdateStatefulSet(set, pods); err != nil && isOrHasInternalError(err) {
 		t.Errorf("StatefulSetControl did not return InternalError found %s", err)
 	}
 }
@@ -341,7 +382,7 @@ func UpdateSetStatusFailure(t *testing.T, set *apps.StatefulSet, invariants inva
 	defer close(stop)
 	ssu.SetUpdateStatefulSetStatusError(apierrors.NewInternalError(errors.New("API server failed")), 2)
 
-	if err := scaleUpStatefulSetControl(set, ssc, spc, invariants); !apierrors.IsInternalError(err) {
+	if err := scaleUpStatefulSetControl(set, ssc, spc, invariants); err != nil && isOrHasInternalError(err) {
 		t.Errorf("StatefulSetControl did not return InternalError found %s", err)
 	}
 	if err := scaleUpStatefulSetControl(set, ssc, spc, invariants); err != nil {
@@ -354,6 +395,12 @@ func UpdateSetStatusFailure(t *testing.T, set *apps.StatefulSet, invariants inva
 	}
 	if set.Status.Replicas != 3 {
 		t.Error("Failed to scale StatefulSet to 3 replicas")
+	}
+	if set.Status.ReadyReplicas != 3 {
+		t.Error("Failed to set readyReplicas to 3")
+	}
+	if set.Status.UpdatedReplicas != 3 {
+		t.Error("Failed to set updatedReplicas to 3")
 	}
 }
 
@@ -370,7 +417,7 @@ func PodRecreateDeleteFailure(t *testing.T, set *apps.StatefulSet, invariants in
 	if err != nil {
 		t.Error(err)
 	}
-	if err := ssc.UpdateStatefulSet(set, pods); err != nil {
+	if _, err := ssc.UpdateStatefulSet(set, pods); err != nil {
 		t.Errorf("Error updating StatefulSet %s", err)
 	}
 	if err := invariants(set, spc); err != nil {
@@ -383,13 +430,13 @@ func PodRecreateDeleteFailure(t *testing.T, set *apps.StatefulSet, invariants in
 	pods[0].Status.Phase = v1.PodFailed
 	spc.podsIndexer.Update(pods[0])
 	spc.SetDeleteStatefulPodError(apierrors.NewInternalError(errors.New("API server failed")), 0)
-	if err := ssc.UpdateStatefulSet(set, pods); !apierrors.IsInternalError(err) {
+	if _, err := ssc.UpdateStatefulSet(set, pods); err != nil && isOrHasInternalError(err) {
 		t.Errorf("StatefulSet failed to %s", err)
 	}
 	if err := invariants(set, spc); err != nil {
 		t.Error(err)
 	}
-	if err := ssc.UpdateStatefulSet(set, pods); err != nil {
+	if _, err := ssc.UpdateStatefulSet(set, pods); err != nil {
 		t.Errorf("Error updating StatefulSet %s", err)
 	}
 	if err := invariants(set, spc); err != nil {
@@ -421,7 +468,7 @@ func TestStatefulSetControlScaleDownDeleteError(t *testing.T) {
 	}
 	*set.Spec.Replicas = 0
 	spc.SetDeleteStatefulPodError(apierrors.NewInternalError(errors.New("API server failed")), 2)
-	if err := scaleDownStatefulSetControl(set, ssc, spc, invariants); !apierrors.IsInternalError(err) {
+	if err := scaleDownStatefulSetControl(set, ssc, spc, invariants); err != nil && isOrHasInternalError(err) {
 		t.Errorf("StatefulSetControl failed to throw error on delete %s", err)
 	}
 	if err := scaleDownStatefulSetControl(set, ssc, spc, invariants); err != nil {
@@ -433,6 +480,12 @@ func TestStatefulSetControlScaleDownDeleteError(t *testing.T) {
 	}
 	if set.Status.Replicas != 0 {
 		t.Error("Failed to scale statefulset to 0 replicas")
+	}
+	if set.Status.ReadyReplicas != 0 {
+		t.Error("Failed to set readyReplicas to 0")
+	}
+	if set.Status.UpdatedReplicas != 0 {
+		t.Error("Failed to set updatedReplicas to 0")
 	}
 }
 
@@ -450,18 +503,19 @@ func TestStatefulSetControl_getSetRevisions(t *testing.T) {
 	testFn := func(test *testcase, t *testing.T) {
 		client := fake.NewSimpleClientset()
 		informerFactory := informers.NewSharedInformerFactory(client, controller.NoResyncPeriodFunc())
-		spc := newFakeStatefulPodControl(informerFactory.Core().V1().Pods(), informerFactory.Apps().V1beta1().StatefulSets())
-		ssu := newFakeStatefulSetStatusUpdater(informerFactory.Apps().V1beta1().StatefulSets())
-		ssc := defaultStatefulSetControl{spc, ssu, history.NewFakeHistory(informerFactory.Apps().V1beta1().ControllerRevisions())}
+		spc := newFakeStatefulPodControl(informerFactory.Core().V1().Pods(), informerFactory.Apps().V1().StatefulSets(), informerFactory.Apps().V1().ControllerRevisions())
+		ssu := newFakeStatefulSetStatusUpdater(informerFactory.Apps().V1().StatefulSets())
+		recorder := record.NewFakeRecorder(10)
+		ssc := defaultStatefulSetControl{spc, ssu, history.NewFakeHistory(informerFactory.Apps().V1().ControllerRevisions()), recorder}
 
 		stop := make(chan struct{})
 		defer close(stop)
 		informerFactory.Start(stop)
 		cache.WaitForCacheSync(
 			stop,
-			informerFactory.Apps().V1beta1().StatefulSets().Informer().HasSynced,
+			informerFactory.Apps().V1().StatefulSets().Informer().HasSynced,
 			informerFactory.Core().V1().Pods().Informer().HasSynced,
-			informerFactory.Apps().V1beta1().ControllerRevisions().Informer().HasSynced,
+			informerFactory.Apps().V1().ControllerRevisions().Informer().HasSynced,
 		)
 		test.set.Status.CollisionCount = new(int32)
 		for i := range test.existing {
@@ -1156,6 +1210,42 @@ func TestStatefulSetControlRollingUpdateWithPartition(t *testing.T) {
 	}
 }
 
+func TestStatefulSetHonorRevisionHistoryLimit(t *testing.T) {
+	invariants := assertMonotonicInvariants
+	set := newStatefulSet(3)
+	client := fake.NewSimpleClientset(set)
+	spc, ssu, ssc, stop := setupController(client)
+	defer close(stop)
+
+	if err := scaleUpStatefulSetControl(set, ssc, spc, invariants); err != nil {
+		t.Errorf("Failed to turn up StatefulSet : %s", err)
+	}
+	var err error
+	set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
+	if err != nil {
+		t.Fatalf("Error getting updated StatefulSet: %v", err)
+	}
+
+	for i := 0; i < int(*set.Spec.RevisionHistoryLimit)+5; i++ {
+		set.Spec.Template.Spec.Containers[0].Image = fmt.Sprintf("foo-%d", i)
+		ssu.SetUpdateStatefulSetStatusError(apierrors.NewInternalError(errors.New("API server failed")), 2)
+		updateStatefulSetControl(set, ssc, spc, assertUpdateInvariants)
+		set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
+		if err != nil {
+			t.Fatalf("Error getting updated StatefulSet: %v", err)
+		}
+		revisions, err := ssc.ListRevisions(set)
+		if err != nil {
+			t.Fatalf("Error listing revisions: %v", err)
+		}
+		// the extra 2 revisions are `currentRevision` and `updateRevision`
+		// They're considered as `live`, and truncateHistory only cleans up non-live revisions
+		if len(revisions) > int(*set.Spec.RevisionHistoryLimit)+2 {
+			t.Fatalf("%s: %d greater than limit %d", "", len(revisions), *set.Spec.RevisionHistoryLimit)
+		}
+	}
+}
+
 func TestStatefulSetControlLimitsHistory(t *testing.T) {
 	type testcase struct {
 		name       string
@@ -1192,7 +1282,7 @@ func TestStatefulSetControlLimitsHistory(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %s", test.name, err)
 			}
-			err = ssc.UpdateStatefulSet(set, pods)
+			_, err = ssc.UpdateStatefulSet(set, pods)
 			if err != nil {
 				t.Fatalf("%s: %s", test.name, err)
 			}
@@ -1483,6 +1573,72 @@ func TestStatefulSetControlRollback(t *testing.T) {
 	}
 }
 
+func TestStatefulSetAvailability(t *testing.T) {
+	tests := []struct {
+		name                              string
+		inputSTS                          *apps.StatefulSet
+		expectedActiveReplicas            int32
+		readyDuration                     time.Duration
+		minReadySecondsFeaturegateEnabled bool
+	}{
+		{
+			name: "replicas not running for required time, still will be available," +
+				" when minReadySeconds is disabled",
+			inputSTS:                          setMinReadySeconds(newStatefulSet(1), int32(3600)),
+			readyDuration:                     0 * time.Minute,
+			expectedActiveReplicas:            int32(1),
+			minReadySecondsFeaturegateEnabled: false,
+		},
+		{
+			name:                              "replicas running for required time, when minReadySeconds is enabled",
+			inputSTS:                          setMinReadySeconds(newStatefulSet(1), int32(3600)),
+			readyDuration:                     -120 * time.Minute,
+			expectedActiveReplicas:            int32(1),
+			minReadySecondsFeaturegateEnabled: true,
+		},
+		{
+			name:                              "replicas not running for required time, when minReadySeconds is enabled",
+			inputSTS:                          setMinReadySeconds(newStatefulSet(1), int32(3600)),
+			readyDuration:                     -30 * time.Minute,
+			expectedActiveReplicas:            int32(0),
+			minReadySecondsFeaturegateEnabled: true,
+		},
+	}
+	for _, test := range tests {
+		defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.StatefulSetMinReadySeconds, test.minReadySecondsFeaturegateEnabled)()
+		set := test.inputSTS
+		client := fake.NewSimpleClientset(set)
+		spc, _, ssc, stop := setupController(client)
+		defer close(stop)
+		if err := scaleUpStatefulSetControl(set, ssc, spc, assertBurstInvariants); err != nil {
+			t.Fatalf("%s: %s", test.name, err)
+		}
+		selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
+		if err != nil {
+			t.Fatalf("%s: %s", test.name, err)
+		}
+		_, err = spc.podsLister.Pods(set.Namespace).List(selector)
+		if err != nil {
+			t.Fatalf("%s: %s", test.name, err)
+		}
+		set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
+		if err != nil {
+			t.Fatalf("%s: %s", test.name, err)
+		}
+		pods, err := spc.setPodAvailable(set, 0, time.Now().Add(test.readyDuration))
+		if err != nil {
+			t.Fatalf("%s: %s", test.name, err)
+		}
+		status, err := ssc.UpdateStatefulSet(set, pods)
+		if err != nil {
+			t.Fatalf("%s: %s", test.name, err)
+		}
+		if status.AvailableReplicas != test.expectedActiveReplicas {
+			t.Fatalf("expected %d active replicas got %d", test.expectedActiveReplicas, status.AvailableReplicas)
+		}
+	}
+}
+
 type requestTracker struct {
 	requests int
 	err      error
@@ -1509,12 +1665,13 @@ type fakeStatefulPodControl struct {
 	podsIndexer      cache.Indexer
 	claimsIndexer    cache.Indexer
 	setsIndexer      cache.Indexer
+	revisionsIndexer cache.Indexer
 	createPodTracker requestTracker
 	updatePodTracker requestTracker
 	deletePodTracker requestTracker
 }
 
-func newFakeStatefulPodControl(podInformer coreinformers.PodInformer, setInformer appsinformers.StatefulSetInformer) *fakeStatefulPodControl {
+func newFakeStatefulPodControl(podInformer coreinformers.PodInformer, setInformer appsinformers.StatefulSetInformer, revisionInformer appsinformers.ControllerRevisionInformer) *fakeStatefulPodControl {
 	claimsIndexer := cache.NewIndexer(controller.KeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
 	return &fakeStatefulPodControl{
 		podInformer.Lister(),
@@ -1523,6 +1680,7 @@ func newFakeStatefulPodControl(podInformer coreinformers.PodInformer, setInforme
 		podInformer.Informer().GetIndexer(),
 		claimsIndexer,
 		setInformer.Informer().GetIndexer(),
+		revisionInformer.Informer().GetIndexer(),
 		requestTracker{0, nil, 0},
 		requestTracker{0, nil, 0},
 		requestTracker{0, nil, 0}}
@@ -1598,6 +1756,39 @@ func (spc *fakeStatefulPodControl) setPodReady(set *apps.StatefulSet, ordinal in
 	sort.Sort(ascendingOrdinal(pods))
 	pod := pods[ordinal].DeepCopy()
 	condition := v1.PodCondition{Type: v1.PodReady, Status: v1.ConditionTrue}
+	podutil.UpdatePodCondition(&pod.Status, &condition)
+	fakeResourceVersion(pod)
+	spc.podsIndexer.Update(pod)
+	return spc.podsLister.Pods(set.Namespace).List(selector)
+}
+
+func (spc *fakeStatefulPodControl) setPodAvailable(set *apps.StatefulSet, ordinal int, lastTransitionTime time.Time) ([]*v1.Pod, error) {
+	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
+	if err != nil {
+		return nil, err
+	}
+	pods, err := spc.podsLister.Pods(set.Namespace).List(selector)
+	if err != nil {
+		return nil, err
+	}
+	if 0 > ordinal || ordinal >= len(pods) {
+		return nil, fmt.Errorf("ordinal %d out of range [0,%d)", ordinal, len(pods))
+	}
+	sort.Sort(ascendingOrdinal(pods))
+	pod := pods[ordinal].DeepCopy()
+	condition := v1.PodCondition{Type: v1.PodReady, Status: v1.ConditionTrue, LastTransitionTime: metav1.Time{Time: lastTransitionTime}}
+	_, existingCondition := podutil.GetPodCondition(&pod.Status, condition.Type)
+	if existingCondition != nil {
+		existingCondition.Status = v1.ConditionTrue
+		existingCondition.LastTransitionTime = metav1.Time{Time: lastTransitionTime}
+	} else {
+		existingCondition = &v1.PodCondition{
+			Type:               v1.PodReady,
+			Status:             v1.ConditionTrue,
+			LastTransitionTime: metav1.Time{Time: lastTransitionTime},
+		}
+		pod.Status.Conditions = append(pod.Status.Conditions, *existingCondition)
+	}
 	podutil.UpdatePodCondition(&pod.Status, &condition)
 	fakeResourceVersion(pod)
 	spc.podsIndexer.Update(pod)
@@ -1729,7 +1920,7 @@ func assertMonotonicInvariants(set *apps.StatefulSet, spc *fakeStatefulPodContro
 	sort.Sort(ascendingOrdinal(pods))
 	for ord := 0; ord < len(pods); ord++ {
 		if ord > 0 && isRunningAndReady(pods[ord]) && !isRunningAndReady(pods[ord-1]) {
-			return fmt.Errorf("Successor %s is Running and Ready while %s is not", pods[ord].Name, pods[ord-1].Name)
+			return fmt.Errorf("successor %s is Running and Ready while %s is not", pods[ord].Name, pods[ord-1].Name)
 		}
 
 		if getOrdinal(pods[ord]) != ord {
@@ -1897,9 +2088,9 @@ func scaleUpStatefulSetControl(set *apps.StatefulSet,
 				continue
 			}
 		}
-
 		// run the controller once and check invariants
-		if err = ssc.UpdateStatefulSet(set, pods); err != nil {
+		_, err = ssc.UpdateStatefulSet(set, pods)
+		if err != nil {
 			return err
 		}
 		set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
@@ -1909,6 +2100,7 @@ func scaleUpStatefulSetControl(set *apps.StatefulSet,
 		if err := invariants(set, spc); err != nil {
 			return err
 		}
+		//fmt.Printf("Ravig pod conditions %v %v", set.Status.ReadyReplicas, *set.Spec.Replicas)
 	}
 	return invariants(set, spc)
 }
@@ -1925,7 +2117,7 @@ func scaleDownStatefulSetControl(set *apps.StatefulSet, ssc StatefulSetControlIn
 		}
 		sort.Sort(ascendingOrdinal(pods))
 		if ordinal := len(pods) - 1; ordinal >= 0 {
-			if err := ssc.UpdateStatefulSet(set, pods); err != nil {
+			if _, err := ssc.UpdateStatefulSet(set, pods); err != nil {
 				return err
 			}
 			set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
@@ -1935,7 +2127,7 @@ func scaleDownStatefulSetControl(set *apps.StatefulSet, ssc StatefulSetControlIn
 			if pods, err = spc.addTerminatingPod(set, ordinal); err != nil {
 				return err
 			}
-			if err = ssc.UpdateStatefulSet(set, pods); err != nil {
+			if _, err = ssc.UpdateStatefulSet(set, pods); err != nil {
 				return err
 			}
 			set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
@@ -1952,7 +2144,7 @@ func scaleDownStatefulSetControl(set *apps.StatefulSet, ssc StatefulSetControlIn
 				spc.podsIndexer.Delete(pods[len(pods)-1])
 			}
 		}
-		if err := ssc.UpdateStatefulSet(set, pods); err != nil {
+		if _, err := ssc.UpdateStatefulSet(set, pods); err != nil {
 			return err
 		}
 		set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
@@ -2015,7 +2207,7 @@ func updateStatefulSetControl(set *apps.StatefulSet,
 	if err != nil {
 		return err
 	}
-	if err = ssc.UpdateStatefulSet(set, pods); err != nil {
+	if _, err = ssc.UpdateStatefulSet(set, pods); err != nil {
 		return err
 	}
 
@@ -2063,7 +2255,7 @@ func updateStatefulSetControl(set *apps.StatefulSet,
 			}
 		}
 
-		if err = ssc.UpdateStatefulSet(set, pods); err != nil {
+		if _, err = ssc.UpdateStatefulSet(set, pods); err != nil {
 			return err
 		}
 		set, err = spc.setsLister.StatefulSets(set.Namespace).Get(set.Name)
@@ -2087,4 +2279,9 @@ func newRevisionOrDie(set *apps.StatefulSet, revision int64) *apps.ControllerRev
 		panic(err)
 	}
 	return rev
+}
+
+func isOrHasInternalError(err error) bool {
+	agg, ok := err.(utilerrors.Aggregate)
+	return !ok && !apierrors.IsInternalError(err) || ok && len(agg.Errors()) > 0 && !apierrors.IsInternalError(agg.Errors()[0])
 }

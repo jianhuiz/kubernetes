@@ -25,21 +25,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
+	"k8s.io/klog/v2"
 
+	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e_node/builder"
+	"k8s.io/kubernetes/test/utils"
 )
 
 // ConformanceRemote contains the specific functions in the node conformance test suite.
 type ConformanceRemote struct{}
 
+// InitConformanceRemote initializes the node conformance test suite.
 func InitConformanceRemote() TestSuite {
 	return &ConformanceRemote{}
 }
 
 // getConformanceDirectory gets node conformance test build directory.
 func getConformanceDirectory() (string, error) {
-	k8sRoot, err := builder.GetK8sRootDir()
+	k8sRoot, err := utils.GetK8sRootDir()
 	if err != nil {
 		return "", err
 	}
@@ -53,7 +56,7 @@ func commandToString(c *exec.Cmd) string {
 
 // Image path constants.
 const (
-	conformanceRegistry         = "gcr.io/google_containers"
+	conformanceRegistry         = "k8s.gcr.io"
 	conformanceArch             = runtime.GOARCH
 	conformanceTarfile          = "node_conformance.tar"
 	conformanceTestBinary       = "e2e_node.test"
@@ -67,9 +70,8 @@ var timestamp = getTimestamp()
 func getConformanceTestImageName(systemSpecName string) string {
 	if systemSpecName == "" {
 		return fmt.Sprintf("%s/node-test-%s:%s", conformanceRegistry, conformanceArch, timestamp)
-	} else {
-		return fmt.Sprintf("%s/node-test-%s-%s:%s", conformanceRegistry, systemSpecName, conformanceArch, timestamp)
 	}
+	return fmt.Sprintf("%s/node-test-%s-%s:%s", conformanceRegistry, systemSpecName, conformanceArch, timestamp)
 }
 
 // buildConformanceTest builds node conformance test image tarball into binDir.
@@ -102,11 +104,11 @@ func buildConformanceTest(binDir, systemSpecName string) error {
 func (c *ConformanceRemote) SetupTestPackage(tardir, systemSpecName string) error {
 	// Build the executables
 	if err := builder.BuildGo(); err != nil {
-		return fmt.Errorf("failed to build the depedencies: %v", err)
+		return fmt.Errorf("failed to build the dependencies: %v", err)
 	}
 
 	// Make sure we can find the newly built binaries
-	buildOutputDir, err := builder.GetK8sBuildOutputDir()
+	buildOutputDir, err := utils.GetK8sBuildOutputDir()
 	if err != nil {
 		return fmt.Errorf("failed to locate kubernetes build output directory %v", err)
 	}
@@ -134,6 +136,7 @@ func (c *ConformanceRemote) SetupTestPackage(tardir, systemSpecName string) erro
 
 // loadConformanceImage loads node conformance image from tar file.
 func loadConformanceImage(host, workspace string) error {
+	klog.Info("Loading conformance image from tarfile")
 	tarfile := filepath.Join(workspace, conformanceTarfile)
 	if output, err := SSH(host, "timeout", conformanceImageLoadTimeout.String(),
 		"docker", "load", "-i", tarfile); err != nil {
@@ -146,15 +149,15 @@ func loadConformanceImage(host, workspace string) error {
 // kubeletLauncherLog is the log of kubelet launcher.
 const kubeletLauncherLog = "kubelet-launcher.log"
 
-// kubeletPodManifestPath is a fixed known pod manifest path. We can not use the random pod
+// kubeletPodPath is a fixed known pod specification path. We can not use the random pod
 // manifest directory generated in e2e_node.test because we need to mount the directory into
 // the conformance test container, it's easier if it's a known directory.
 // TODO(random-liu): Get rid of this once we switch to cluster e2e node bootstrap script.
-var kubeletPodManifestPath = "conformance-pod-manifest-" + timestamp
+var kubeletPodPath = "conformance-pod-manifest-" + timestamp
 
-// getPodManifestPath returns pod manifest full path.
-func getPodManifestPath(workspace string) string {
-	return filepath.Join(workspace, kubeletPodManifestPath)
+// getPodPath returns pod manifest full path.
+func getPodPath(workspace string) string {
+	return filepath.Join(workspace, kubeletPodPath)
 }
 
 // isSystemd returns whether the node is a systemd node.
@@ -172,15 +175,16 @@ func isSystemd(host string) (bool, error) {
 // with cluster e2e and launch kubelet outside of the test for both regular node e2e and
 // node conformance test.
 // TODO(random-liu): Switch to use standard node bootstrap script.
-func launchKubelet(host, workspace, results, testArgs string) error {
-	podManifestPath := getPodManifestPath(workspace)
+func launchKubelet(host, workspace, results, testArgs, bearerToken string) error {
+	podManifestPath := getPodPath(workspace)
 	if output, err := SSH(host, "mkdir", podManifestPath); err != nil {
 		return fmt.Errorf("failed to create kubelet pod manifest path %q: error - %v output - %q",
 			podManifestPath, err, output)
 	}
 	startKubeletCmd := fmt.Sprintf("./%s --run-kubelet-mode --logtostderr --node-name=%s"+
+		" --bearer-token=%s"+
 		" --report-dir=%s %s --kubelet-flags=--pod-manifest-path=%s > %s 2>&1",
-		conformanceTestBinary, host, results, testArgs, podManifestPath, filepath.Join(results, kubeletLauncherLog))
+		conformanceTestBinary, host, bearerToken, results, testArgs, podManifestPath, filepath.Join(results, kubeletLauncherLog))
 	var cmd []string
 	systemd, err := isSystemd(host)
 	if err != nil {
@@ -205,13 +209,13 @@ func launchKubelet(host, workspace, results, testArgs string) error {
 			),
 		}
 	}
-	glog.V(2).Infof("Launch kubelet with command: %v", cmd)
+	klog.V(2).Infof("Launch kubelet with command: %v", cmd)
 	output, err := SSH(host, cmd...)
 	if err != nil {
 		return fmt.Errorf("failed to launch kubelet with command %v: error - %v output - %q",
 			cmd, err, output)
 	}
-	glog.Info("Successfully launch kubelet")
+	klog.Info("Successfully launch kubelet")
 	return nil
 }
 
@@ -220,12 +224,12 @@ const kubeletStopGracePeriod = 10 * time.Second
 
 // stopKubelet stops kubelet launcher and kubelet gracefully.
 func stopKubelet(host, workspace string) error {
-	glog.Info("Gracefully stop kubelet launcher")
+	klog.Info("Gracefully stop kubelet launcher")
 	if output, err := SSH(host, "pkill", conformanceTestBinary); err != nil {
 		return fmt.Errorf("failed to gracefully stop kubelet launcher: error - %v output - %q",
 			err, output)
 	}
-	glog.Info("Wait for kubelet launcher to stop")
+	klog.Info("Wait for kubelet launcher to stop")
 	stopped := false
 	for start := time.Now(); time.Since(start) < kubeletStopGracePeriod; time.Sleep(time.Second) {
 		// Check whether the process is still running.
@@ -241,15 +245,15 @@ func stopKubelet(host, workspace string) error {
 		}
 	}
 	if !stopped {
-		glog.Info("Forcibly stop kubelet")
+		klog.Info("Forcibly stop kubelet")
 		if output, err := SSH(host, "pkill", "-SIGKILL", conformanceTestBinary); err != nil {
 			return fmt.Errorf("failed to forcibly stop kubelet: error - %v output - %q",
 				err, output)
 		}
 	}
-	glog.Info("Successfully stop kubelet")
+	klog.Info("Successfully stop kubelet")
 	// Clean up the pod manifest path
-	podManifestPath := getPodManifestPath(workspace)
+	podManifestPath := getPodPath(workspace)
 	if output, err := SSH(host, "rm", "-f", filepath.Join(workspace, podManifestPath)); err != nil {
 		return fmt.Errorf("failed to cleanup pod manifest directory %q: error - %v, output - %q",
 			podManifestPath, err, output)
@@ -258,7 +262,7 @@ func stopKubelet(host, workspace string) error {
 }
 
 // RunTest runs test on the node.
-func (c *ConformanceRemote) RunTest(host, workspace, results, imageDesc, junitFilePrefix, testArgs, _, systemSpecName string, timeout time.Duration) (string, error) {
+func (c *ConformanceRemote) RunTest(host, workspace, results, imageDesc, junitFilePrefix, testArgs, _, systemSpecName, extraEnvs, _ string, timeout time.Duration) (string, error) {
 	// Install the cni plugins and add a basic CNI configuration.
 	if err := setupCNI(host, workspace); err != nil {
 		return "", err
@@ -277,27 +281,27 @@ func (c *ConformanceRemote) RunTest(host, workspace, results, imageDesc, junitFi
 		return "", err
 	}
 
+	bearerToken, err := framework.GenerateSecureToken(16)
+	if err != nil {
+		return "", err
+	}
+
 	// Launch kubelet.
-	if err := launchKubelet(host, workspace, results, testArgs); err != nil {
+	if err := launchKubelet(host, workspace, results, testArgs, bearerToken); err != nil {
 		return "", err
 	}
 	// Stop kubelet.
 	defer func() {
 		if err := stopKubelet(host, workspace); err != nil {
 			// Only log an error if failed to stop kubelet because it is not critical.
-			glog.Errorf("failed to stop kubelet: %v", err)
+			klog.Errorf("failed to stop kubelet: %v", err)
 		}
 	}()
 
 	// Run the tests
-	glog.V(2).Infof("Starting tests on %q", host)
-	podManifestPath := getPodManifestPath(workspace)
-	cmd := fmt.Sprintf("'timeout -k 30s %fs docker run --rm --privileged=true --net=host -v /:/rootfs -v %s:%s -v %s:/var/result -e TEST_ARGS=--report-prefix=%s %s'",
-		timeout.Seconds(), podManifestPath, podManifestPath, results, junitFilePrefix, getConformanceTestImageName(systemSpecName))
-	testOutput, err := SSH(host, "sh", "-c", cmd)
-	if err != nil {
-		return testOutput, err
-	}
-
-	return testOutput, nil
+	klog.V(2).Infof("Starting tests on %q", host)
+	podManifestPath := getPodPath(workspace)
+	cmd := fmt.Sprintf("'timeout -k 30s %fs docker run --rm --privileged=true --net=host -v /:/rootfs -v %s:%s -v %s:/var/result -e TEST_ARGS=--report-prefix=%s -e EXTRA_ENVS=%s -e TEST_ARGS=--bearer-token=%s %s'",
+		timeout.Seconds(), podManifestPath, podManifestPath, results, junitFilePrefix, extraEnvs, bearerToken, getConformanceTestImageName(systemSpecName))
+	return SSH(host, "sh", "-c", cmd)
 }

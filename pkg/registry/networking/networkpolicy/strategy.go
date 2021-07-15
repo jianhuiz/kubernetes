@@ -17,15 +17,17 @@ limitations under the License.
 package networkpolicy
 
 import (
+	"context"
 	"reflect"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/storage/names"
-	"k8s.io/kubernetes/pkg/api"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/apis/networking"
 	"k8s.io/kubernetes/pkg/apis/networking/validation"
+	"k8s.io/kubernetes/pkg/features"
 )
 
 // networkPolicyStrategy implements verification logic for NetworkPolicies
@@ -35,7 +37,7 @@ type networkPolicyStrategy struct {
 }
 
 // Strategy is the default logic that applies when creating and updating NetworkPolicy objects.
-var Strategy = networkPolicyStrategy{api.Scheme, names.SimpleNameGenerator}
+var Strategy = networkPolicyStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
 
 // NamespaceScoped returns true because all NetworkPolicies need to be within a namespace.
 func (networkPolicyStrategy) NamespaceScoped() bool {
@@ -43,15 +45,23 @@ func (networkPolicyStrategy) NamespaceScoped() bool {
 }
 
 // PrepareForCreate clears the status of a NetworkPolicy before creation.
-func (networkPolicyStrategy) PrepareForCreate(ctx genericapirequest.Context, obj runtime.Object) {
+func (networkPolicyStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
 	networkPolicy := obj.(*networking.NetworkPolicy)
 	networkPolicy.Generation = 1
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.NetworkPolicyEndPort) {
+		dropNetworkPolicyEndPort(networkPolicy)
+	}
 }
 
 // PrepareForUpdate clears fields that are not allowed to be set by end users on update.
-func (networkPolicyStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, old runtime.Object) {
+func (networkPolicyStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	newNetworkPolicy := obj.(*networking.NetworkPolicy)
 	oldNetworkPolicy := old.(*networking.NetworkPolicy)
+
+	if !utilfeature.DefaultFeatureGate.Enabled(features.NetworkPolicyEndPort) && !endPortInUse(oldNetworkPolicy) {
+		dropNetworkPolicyEndPort(newNetworkPolicy)
+	}
 
 	// Any changes to the spec increment the generation number, any changes to the
 	// status should reflect the generation number of the corresponding object.
@@ -62,9 +72,14 @@ func (networkPolicyStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj
 }
 
 // Validate validates a new NetworkPolicy.
-func (networkPolicyStrategy) Validate(ctx genericapirequest.Context, obj runtime.Object) field.ErrorList {
+func (networkPolicyStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	networkPolicy := obj.(*networking.NetworkPolicy)
 	return validation.ValidateNetworkPolicy(networkPolicy)
+}
+
+// WarningsOnCreate returns warnings for the creation of the given object.
+func (networkPolicyStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
+	return nil
 }
 
 // Canonicalize normalizes the object after validation.
@@ -76,13 +91,57 @@ func (networkPolicyStrategy) AllowCreateOnUpdate() bool {
 }
 
 // ValidateUpdate is the default update validation for an end user.
-func (networkPolicyStrategy) ValidateUpdate(ctx genericapirequest.Context, obj, old runtime.Object) field.ErrorList {
+func (networkPolicyStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	validationErrorList := validation.ValidateNetworkPolicy(obj.(*networking.NetworkPolicy))
 	updateErrorList := validation.ValidateNetworkPolicyUpdate(obj.(*networking.NetworkPolicy), old.(*networking.NetworkPolicy))
 	return append(validationErrorList, updateErrorList...)
 }
 
+// WarningsOnUpdate returns warnings for the given update.
+func (networkPolicyStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
+	return nil
+}
+
 // AllowUnconditionalUpdate is the default update policy for NetworkPolicy objects.
 func (networkPolicyStrategy) AllowUnconditionalUpdate() bool {
 	return true
+}
+
+// Drops Network Policy EndPort fields if Feature Gate is also disabled.
+// This should be used in future Network Policy evolutions
+func dropNetworkPolicyEndPort(netPol *networking.NetworkPolicy) {
+	for idx, ingressSpec := range netPol.Spec.Ingress {
+		for idxPort, port := range ingressSpec.Ports {
+			if port.EndPort != nil {
+				netPol.Spec.Ingress[idx].Ports[idxPort].EndPort = nil
+			}
+		}
+	}
+
+	for idx, egressSpec := range netPol.Spec.Egress {
+		for idxPort, port := range egressSpec.Ports {
+			if port.EndPort != nil {
+				netPol.Spec.Egress[idx].Ports[idxPort].EndPort = nil
+			}
+		}
+	}
+}
+
+func endPortInUse(netPol *networking.NetworkPolicy) bool {
+	for _, ingressSpec := range netPol.Spec.Ingress {
+		for _, port := range ingressSpec.Ports {
+			if port.EndPort != nil {
+				return true
+			}
+		}
+	}
+
+	for _, egressSpec := range netPol.Spec.Egress {
+		for _, port := range egressSpec.Ports {
+			if port.EndPort != nil {
+				return true
+			}
+		}
+	}
+	return false
 }

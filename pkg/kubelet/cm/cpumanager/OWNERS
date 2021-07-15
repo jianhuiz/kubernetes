@@ -1,6 +1,11 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 approvers:
 - derekwaynecarr
 - vishh
 - ConnorDoyle
-- sjenning
+reviewers:
+- klueska
+
+emeritus_approvers:
 - balajismaniam

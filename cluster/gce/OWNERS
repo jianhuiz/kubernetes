@@ -1,10 +1,29 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 reviewers:
   - bowei
-  - gmarek
-  - jszczepkowski
+  - cjcullen
   - vishh
+  - mwielgus
+  - MaciekPytel
+  - yujuhong
+  - mtaufen
+  - jeremyje
+  - sig-scalability-reviewers
 approvers:
   - bowei
-  - gmarek
-  - jszczepkowski
+  - cjcullen
   - vishh
+  - mwielgus
+  - MaciekPytel
+  - yujuhong
+  - mtaufen
+  - jeremyje
+  - sig-scalability-approvers
+emeritus_approvers:
+  - gmarek
+  - jingax10
+  - jszczepkowski
+labels:
+- sig/cloud-provider
+- area/provider/gcp

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Copyright 2015 The Kubernetes Authors.
 #
@@ -19,13 +19,6 @@ set -o nounset
 set -o pipefail
 set -o xtrace
 
-retry() {
-  for i in {1..5}; do
-    "$@" && return 0 || sleep $i
-  done
-  "$@"
-}
-
 # Runs the unit and integration tests, producing JUnit-style XML test
 # reports in ${WORKSPACE}/artifacts. This script is intended to be run from
 # kubekins-test container with a kubernetes repo mapped in. See
@@ -33,29 +26,30 @@ retry() {
 
 export PATH=${GOPATH}/bin:${PWD}/third_party/etcd:/usr/local/go/bin:${PATH}
 
-retry go get github.com/tools/godep && godep version
-retry go get github.com/jstemmer/go-junit-report
+# Until all GOPATH references are removed from all build scripts as well,
+# explicitly disable module mode to avoid picking up user-set GO111MODULE preferences.
+# As individual scripts make use of go modules, they can explicitly set GO111MODULE=on
+export GO111MODULE=off
 
-# Enable the Go race detector.
-export KUBE_RACE=-race
+# Install tools we need
+pushd "./hack/tools" >/dev/null
+  GO111MODULE=on go install gotest.tools/gotestsum
+popd >/dev/null
+
 # Disable coverage report
 export KUBE_COVER="n"
-# Produce a JUnit-style XML test report for Jenkins.
-export KUBE_JUNIT_REPORT_DIR=${WORKSPACE}/artifacts
-export ARTIFACTS_DIR=${WORKSPACE}/artifacts
+# Set artifacts directory
+export ARTIFACTS=${ARTIFACTS:-"${WORKSPACE}/artifacts"}
 # Save the verbose stdout as well.
 export KUBE_KEEP_VERBOSE_TEST_OUTPUT=y
-export KUBE_TIMEOUT='-timeout 300s'
 export KUBE_INTEGRATION_TEST_MAX_CONCURRENCY=4
 export LOG_LEVEL=4
 
-cd /go/src/k8s.io/kubernetes
+cd "${GOPATH}/src/k8s.io/kubernetes"
 
 make generated_files
 go install ./cmd/...
 ./hack/install-etcd.sh
 
-make test
 make test-cmd
 make test-integration
-./hack/test-update-storage-objects.sh

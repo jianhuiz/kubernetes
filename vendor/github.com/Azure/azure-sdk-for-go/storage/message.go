@@ -1,5 +1,8 @@
 package storage
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 import (
 	"encoding/xml"
 	"fmt"
@@ -64,13 +67,16 @@ func (m *Message) Put(options *PutMessageOptions) error {
 	if err != nil {
 		return err
 	}
-	defer readAndCloseBody(resp.body)
-
-	err = xmlUnmarshal(resp.body, m)
+	defer drainRespBody(resp)
+	err = checkRespCode(resp, []int{http.StatusCreated})
 	if err != nil {
 		return err
 	}
-	return checkRespCode(resp.statusCode, []int{http.StatusCreated})
+	err = xmlUnmarshal(resp.Body, m)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateMessageOptions is the set of options can be specified for Update Messsage
@@ -97,7 +103,8 @@ func (m *Message) Update(options *UpdateMessageOptions) error {
 		return err
 	}
 	headers["Content-Length"] = strconv.Itoa(nn)
-
+	// visibilitytimeout is required for Update (zero or greater) so set the default here
+	query.Set("visibilitytimeout", "0")
 	if options != nil {
 		if options.VisibilityTimeout != 0 {
 			query.Set("visibilitytimeout", strconv.Itoa(options.VisibilityTimeout))
@@ -111,10 +118,10 @@ func (m *Message) Update(options *UpdateMessageOptions) error {
 	if err != nil {
 		return err
 	}
-	defer readAndCloseBody(resp.body)
+	defer drainRespBody(resp)
 
-	m.PopReceipt = resp.headers.Get("x-ms-popreceipt")
-	nextTimeStr := resp.headers.Get("x-ms-time-next-visible")
+	m.PopReceipt = resp.Header.Get("x-ms-popreceipt")
+	nextTimeStr := resp.Header.Get("x-ms-time-next-visible")
 	if nextTimeStr != "" {
 		nextTime, err := time.Parse(time.RFC1123, nextTimeStr)
 		if err != nil {
@@ -123,7 +130,7 @@ func (m *Message) Update(options *UpdateMessageOptions) error {
 		m.NextVisible = TimeRFC1123(nextTime)
 	}
 
-	return checkRespCode(resp.statusCode, []int{http.StatusNoContent})
+	return checkRespCode(resp, []int{http.StatusNoContent})
 }
 
 // Delete operation deletes the specified message.
@@ -143,8 +150,8 @@ func (m *Message) Delete(options *QueueServiceOptions) error {
 	if err != nil {
 		return err
 	}
-	readAndCloseBody(resp.body)
-	return checkRespCode(resp.statusCode, []int{http.StatusNoContent})
+	defer drainRespBody(resp)
+	return checkRespCode(resp, []int{http.StatusNoContent})
 }
 
 type putMessageRequest struct {

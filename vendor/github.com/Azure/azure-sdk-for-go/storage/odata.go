@@ -1,5 +1,8 @@
 package storage
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 // MetadataLevel determines if operations should return a paylod,
 // and it level of detail.
 type MetadataLevel string
@@ -12,6 +15,7 @@ const (
 
 	OdataBinary   = "Edm.Binary"
 	OdataDateTime = "Edm.DateTime"
+	OdataDouble   = "Edm.Double"
 	OdataGUID     = "Edm.Guid"
 	OdataInt64    = "Edm.Int64"
 

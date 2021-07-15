@@ -1,5 +1,8 @@
 package storage
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 import (
 	"bytes"
 	"encoding/json"
@@ -11,8 +14,6 @@ import (
 	"net/textproto"
 	"sort"
 	"strings"
-
-	"github.com/satori/uuid"
 )
 
 // Operation type. Insert, Delete, Replace etc.
@@ -117,14 +118,25 @@ func (t *TableBatch) MergeEntity(entity *Entity) {
 // the changesets.
 // As per document https://docs.microsoft.com/en-us/rest/api/storageservices/fileservices/performing-entity-group-transactions
 func (t *TableBatch) ExecuteBatch() error {
-	changesetBoundary := fmt.Sprintf("changeset_%s", uuid.NewV1())
+
+	id, err := newUUID()
+	if err != nil {
+		return err
+	}
+
+	changesetBoundary := fmt.Sprintf("changeset_%s", id.String())
 	uri := t.Table.tsc.client.getEndpoint(tableServiceName, "$batch", nil)
 	changesetBody, err := t.generateChangesetBody(changesetBoundary)
 	if err != nil {
 		return err
 	}
 
-	boundary := fmt.Sprintf("batch_%s", uuid.NewV1())
+	id, err = newUUID()
+	if err != nil {
+		return err
+	}
+
+	boundary := fmt.Sprintf("batch_%s", id.String())
 	body, err := generateBody(changesetBody, changesetBoundary, boundary)
 	if err != nil {
 		return err
@@ -137,15 +149,15 @@ func (t *TableBatch) ExecuteBatch() error {
 	if err != nil {
 		return err
 	}
-	defer resp.body.Close()
+	defer drainRespBody(resp.resp)
 
-	if err = checkRespCode(resp.statusCode, []int{http.StatusAccepted}); err != nil {
+	if err = checkRespCode(resp.resp, []int{http.StatusAccepted}); err != nil {
 
 		// check which batch failed.
 		operationFailedMessage := t.getFailedOperation(resp.odata.Err.Message.Value)
-		requestID, date, version := getDebugHeaders(resp.headers)
+		requestID, date, version := getDebugHeaders(resp.resp.Header)
 		return AzureStorageServiceError{
-			StatusCode: resp.statusCode,
+			StatusCode: resp.resp.StatusCode,
 			Code:       resp.odata.Err.Code,
 			RequestID:  requestID,
 			Date:       date,

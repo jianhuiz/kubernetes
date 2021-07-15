@@ -17,42 +17,117 @@ limitations under the License.
 package fuzzer
 
 import (
-	"github.com/google/gofuzz"
-
-	runtimeserializer "k8s.io/apimachinery/pkg/runtime/serializer"
+	bootstraptokenv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/bootstraptoken/v1"
 	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
+	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	runtimeserializer "k8s.io/apimachinery/pkg/runtime/serializer"
+
+	fuzz "github.com/google/gofuzz"
 )
 
 // Funcs returns the fuzzer functions for the kubeadm apis.
 func Funcs(codecs runtimeserializer.CodecFactory) []interface{} {
 	return []interface{}{
-		func(obj *kubeadm.MasterConfiguration, c fuzz.Continue) {
-			c.FuzzNoCustom(obj)
-			obj.KubernetesVersion = "v10"
-			obj.API.BindPort = 20
-			obj.API.AdvertiseAddress = "foo"
-			obj.Networking.ServiceSubnet = "foo"
-			obj.Networking.DNSDomain = "foo"
-			obj.AuthorizationModes = []string{"foo"}
-			obj.CertificatesDir = "foo"
-			obj.APIServerCertSANs = []string{}
-			obj.Token = "foo"
-			obj.Etcd.Image = "foo"
-			obj.Etcd.DataDir = "foo"
-			obj.ImageRepository = "foo"
-			obj.CIImageRepository = ""
-			obj.UnifiedControlPlaneImage = "foo"
-			obj.FeatureGates = map[string]bool{}
-		},
-		func(obj *kubeadm.NodeConfiguration, c fuzz.Continue) {
-			c.FuzzNoCustom(obj)
-			obj.CACertPath = "foo"
-			obj.CACertPath = "foo"
-			obj.DiscoveryFile = "foo"
-			obj.DiscoveryToken = "foo"
-			obj.DiscoveryTokenAPIServers = []string{"foo"}
-			obj.TLSBootstrapToken = "foo"
-			obj.Token = "foo"
+		fuzzInitConfiguration,
+		fuzzClusterConfiguration,
+		fuzzComponentConfigMap,
+		fuzzDNS,
+		fuzzNodeRegistration,
+		fuzzLocalEtcd,
+		fuzzNetworking,
+		fuzzJoinConfiguration,
+		fuzzJoinControlPlane,
+	}
+}
+
+func fuzzInitConfiguration(obj *kubeadm.InitConfiguration, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
+
+	// Pinning values for fields that get defaults if fuzz value is empty string or nil (thus making the round trip test fail)
+
+	// Avoid round tripping the ClusterConfiguration embedded in the InitConfiguration, since it is
+	// only present in the internal version and not in public versions
+	obj.ClusterConfiguration = kubeadm.ClusterConfiguration{}
+
+	// Adds the default bootstrap token to get the round trip working
+	obj.BootstrapTokens = []bootstraptokenv1.BootstrapToken{
+		{
+			Groups: []string{"foo"},
+			Usages: []string{"foo"},
+			TTL:    &metav1.Duration{Duration: 1234},
 		},
 	}
+	obj.SkipPhases = nil
+	obj.NodeRegistration.ImagePullPolicy = corev1.PullIfNotPresent
+	obj.Patches = nil
+}
+
+func fuzzNodeRegistration(obj *kubeadm.NodeRegistrationOptions, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
+
+	// Pinning values for fields that get defaults if fuzz value is empty string or nil (thus making the round trip test fail)
+	obj.IgnorePreflightErrors = nil
+}
+
+func fuzzClusterConfiguration(obj *kubeadm.ClusterConfiguration, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
+
+	// Pinning values for fields that get defaults if fuzz value is empty string or nil (thus making the round trip test fail)
+	obj.CertificatesDir = "foo"
+	obj.CIImageRepository = "" //This fields doesn't exists in public API >> using default to get the roundtrip test pass
+	obj.ClusterName = "bar"
+	obj.ImageRepository = "baz"
+	obj.KubernetesVersion = "qux"
+	obj.APIServer.TimeoutForControlPlane = &metav1.Duration{
+		Duration: constants.DefaultControlPlaneTimeout,
+	}
+}
+
+func fuzzDNS(obj *kubeadm.DNS, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
+
+	// Pinning values for fields that get defaults if fuzz value is empty string or nil
+	obj.Type = kubeadm.CoreDNS
+}
+
+func fuzzComponentConfigMap(obj *kubeadm.ComponentConfigMap, c fuzz.Continue) {
+	// This is intentionally empty because component config does not exists in the public api
+	// (empty mean all ComponentConfigs fields nil, and this is necessary for getting roundtrip passing)
+}
+
+func fuzzLocalEtcd(obj *kubeadm.LocalEtcd, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
+
+	// Pinning values for fields that get defaults if fuzz value is empty string or nil (thus making the round trip test fail)
+	obj.DataDir = "foo"
+}
+
+func fuzzNetworking(obj *kubeadm.Networking, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
+
+	// Pinning values for fields that get defaults if fuzz value is empty string or nil (thus making the round trip test fail)
+	obj.DNSDomain = "foo"
+	obj.ServiceSubnet = "bar"
+}
+
+func fuzzJoinConfiguration(obj *kubeadm.JoinConfiguration, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
+
+	// Pinning values for fields that get defaults if fuzz value is empty string or nil (thus making the round trip test fail)
+	obj.CACertPath = "foo"
+	obj.Discovery = kubeadm.Discovery{
+		BootstrapToken:    &kubeadm.BootstrapTokenDiscovery{Token: "baz"},
+		TLSBootstrapToken: "qux",
+		Timeout:           &metav1.Duration{Duration: 1234},
+	}
+	obj.SkipPhases = nil
+	obj.NodeRegistration.ImagePullPolicy = corev1.PullIfNotPresent
+	obj.Patches = nil
+}
+
+func fuzzJoinControlPlane(obj *kubeadm.JoinControlPlane, c fuzz.Continue) {
+	c.FuzzNoCustom(obj)
 }

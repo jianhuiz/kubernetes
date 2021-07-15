@@ -16,152 +16,268 @@ limitations under the License.
 
 package kubeadm
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"testing"
 
-// kubeadmReset executes "kubeadm reset" and restarts kubelet.
-func kubeadmReset() error {
-	_, _, err := RunCmd(*kubeadmPath, "reset")
-	return err
+	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
+
+	"github.com/lithammer/dedent"
+)
+
+func runKubeadmInit(args ...string) (string, string, int, error) {
+	const dryRunDir = "KUBEADM_INIT_DRYRUN_DIR"
+	if err := os.Setenv(dryRunDir, os.TempDir()); err != nil {
+		panic(fmt.Sprintf("could not set the %s environment variable", dryRunDir))
+	}
+	kubeadmPath := getKubeadmPath()
+	kubeadmArgs := []string{"init", "--dry-run", "--ignore-preflight-errors=all"}
+	kubeadmArgs = append(kubeadmArgs, args...)
+	return RunCmd(kubeadmPath, kubeadmArgs...)
 }
 
 func TestCmdInitToken(t *testing.T) {
-	if *kubeadmCmdSkip {
-		t.Log("kubeadm cmd tests being skipped")
-		t.Skip()
-	}
-
-	var initTest = []struct {
+	initTest := []struct {
+		name     string
 		args     string
 		expected bool
 	}{
-		{"--discovery=token://abcd:1234567890abcd", false},     // invalid token size
-		{"--discovery=token://Abcdef:1234567890abcdef", false}, // invalid token non-lowercase
+		{
+			name:     "invalid token size",
+			args:     "--token=abcd:1234567890abcd",
+			expected: false,
+		},
+		{
+			name:     "invalid token non-lowercase",
+			args:     "--token=Abcdef:1234567890abcdef",
+			expected: false,
+		},
+		{
+			name:     "valid token is accepted",
+			args:     "--token=abcdef.0123456789abcdef",
+			expected: true,
+		},
 	}
 
 	for _, rt := range initTest {
-		_, _, actual := RunCmd(*kubeadmPath, "init", rt.args, "--skip-preflight-checks")
-		if (actual == nil) != rt.expected {
-			t.Errorf(
-				"failed CmdInitToken running 'kubeadm init %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
-				rt.args,
-				actual,
-				rt.expected,
-				(actual == nil),
-			)
-		}
-		kubeadmReset()
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, err := runKubeadmInit(rt.args)
+			if (err == nil) != rt.expected {
+				t.Fatalf(dedent.Dedent(`
+					CmdInitToken test case %q failed with an error: %v
+					command 'kubeadm init %s'
+						expected: %t
+						err: %t
+					`),
+					rt.name,
+					err,
+					rt.args,
+					rt.expected,
+					(err == nil),
+				)
+			}
+		})
 	}
 }
 
 func TestCmdInitKubernetesVersion(t *testing.T) {
-	if *kubeadmCmdSkip {
-		t.Log("kubeadm cmd tests being skipped")
-		t.Skip()
-	}
-
-	var initTest = []struct {
+	initTest := []struct {
+		name     string
 		args     string
 		expected bool
 	}{
-		{"--kubernetes-version=foobar", false},
+		{
+			name:     "invalid semantic version string is detected",
+			args:     "--kubernetes-version=v1.1",
+			expected: false,
+		},
+		{
+			name:     "valid version is accepted",
+			args:     "--kubernetes-version=" + constants.CurrentKubernetesVersion.String(),
+			expected: true,
+		},
 	}
 
 	for _, rt := range initTest {
-		_, _, actual := RunCmd(*kubeadmPath, "init", rt.args, "--skip-preflight-checks")
-		if (actual == nil) != rt.expected {
-			t.Errorf(
-				"failed CmdInitKubernetesVersion running 'kubeadm init %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
-				rt.args,
-				actual,
-				rt.expected,
-				(actual == nil),
-			)
-		}
-		kubeadmReset()
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, err := runKubeadmInit(rt.args)
+			if (err == nil) != rt.expected {
+				t.Fatalf(dedent.Dedent(`
+					CmdInitKubernetesVersion test case %q failed with an error: %v
+					command 'kubeadm init %s'
+						expected: %t
+						err: %t
+					`),
+					rt.name,
+					err,
+					rt.args,
+					rt.expected,
+					(err == nil),
+				)
+			}
+		})
 	}
 }
 
 func TestCmdInitConfig(t *testing.T) {
-	if *kubeadmCmdSkip {
-		t.Log("kubeadm cmd tests being skipped")
-		t.Skip()
-	}
-
-	var initTest = []struct {
+	initTest := []struct {
+		name     string
 		args     string
 		expected bool
 	}{
-		{"--config=foobar", false},
-		{"--config=/does/not/exist/foo/bar", false},
+		{
+			name:     "fail on non existing path",
+			args:     "--config=/does/not/exist/foo/bar",
+			expected: false,
+		},
+		{
+			name:     "can't load v1beta1 config",
+			args:     "--config=testdata/init/v1beta1.yaml",
+			expected: false,
+		},
+		{
+			name:     "don't allow mixed arguments v1beta2",
+			args:     "--kubernetes-version=1.11.0 --config=testdata/init/v1beta2.yaml",
+			expected: false,
+		},
+		{
+			name:     "can load v1beta2 config",
+			args:     "--config=testdata/init/v1beta2.yaml",
+			expected: true,
+		},
+		{
+			name:     "can load v1beta3 config",
+			args:     "--config=testdata/init/v1beta3.yaml",
+			expected: true,
+		},
+		{
+			name:     "don't allow mixed arguments v1beta3",
+			args:     "--kubernetes-version=1.11.0 --config=testdata/init/v1beta3.yaml",
+			expected: false,
+		},
+		{
+			name:     "can load current component config",
+			args:     "--config=testdata/init/current-component-config.yaml",
+			expected: true,
+		},
+		{
+			name:     "can't load old component config",
+			args:     "--config=testdata/init/old-component-config.yaml",
+			expected: false,
+		},
 	}
 
 	for _, rt := range initTest {
-		_, _, actual := RunCmd(*kubeadmPath, "init", rt.args, "--skip-preflight-checks")
-		if (actual == nil) != rt.expected {
-			t.Errorf(
-				"failed CmdInitConfig running 'kubeadm init %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
-				rt.args,
-				actual,
-				rt.expected,
-				(actual == nil),
-			)
-		}
-		kubeadmReset()
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, err := runKubeadmInit(rt.args)
+			if (err == nil) != rt.expected {
+				t.Fatalf(dedent.Dedent(`
+						CmdInitConfig test case %q failed with an error: %v
+						command 'kubeadm init %s'
+							expected: %t
+							err: %t
+						`),
+					rt.name,
+					err,
+					rt.args,
+					rt.expected,
+					(err == nil),
+				)
+			}
+		})
 	}
 }
 
 func TestCmdInitAPIPort(t *testing.T) {
-	if *kubeadmCmdSkip {
-		t.Log("kubeadm cmd tests being skipped")
-		t.Skip()
-	}
-
-	var initTest = []struct {
+	initTest := []struct {
+		name     string
 		args     string
 		expected bool
 	}{
-		{"--api-port=foobar", false},
+		{
+			name:     "fail on non-string port",
+			args:     "--apiserver-bind-port=foobar",
+			expected: false,
+		},
+		{
+			name:     "fail on too large port number",
+			args:     "--apiserver-bind-port=100000",
+			expected: false,
+		},
+		{
+			name:     "fail on negative port number",
+			args:     "--apiserver-bind-port=-6000",
+			expected: false,
+		},
+		{
+			name:     "accept a valid port number",
+			args:     "--apiserver-bind-port=6000",
+			expected: true,
+		},
 	}
 
 	for _, rt := range initTest {
-		_, _, actual := RunCmd(*kubeadmPath, "init", rt.args, "--skip-preflight-checks")
-		if (actual == nil) != rt.expected {
-			t.Errorf(
-				"failed CmdInitAPIPort running 'kubeadm init %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
-				rt.args,
-				actual,
-				rt.expected,
-				(actual == nil),
-			)
-		}
-		kubeadmReset()
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, _, err := runKubeadmInit(rt.args)
+			if (err == nil) != rt.expected {
+				t.Fatalf(dedent.Dedent(`
+							CmdInitAPIPort test case %q failed with an error: %v
+							command 'kubeadm init %s'
+								expected: %t
+								err: %t
+							`),
+					rt.name,
+					err,
+					rt.args,
+					rt.expected,
+					(err == nil),
+				)
+			}
+		})
 	}
 }
 
-func TestCmdInitArgsMixed(t *testing.T) {
-	if *kubeadmCmdSkip {
-		t.Log("kubeadm cmd tests being skipped")
-		t.Skip()
-	}
+// TestCmdInitFeatureGates test that feature gates won't make kubeadm panic.
+// When go panics it will exit with a 2 code. While we don't expect the init
+// calls to succeed in these tests, we ensure that the exit code of calling
+// kubeadm with different feature gates is not 2.
+func TestCmdInitFeatureGates(t *testing.T) {
+	const PanicExitcode = 2
 
-	var initTest = []struct {
-		args     string
-		expected bool
+	initTest := []struct {
+		name string
+		args string
 	}{
-		{"--api-port=1000 --config=/etc/kubernets/kubeadm.config", false},
+		{
+			name: "no feature gates passed",
+			args: "",
+		},
+		{
+			name: "feature gate IPv6DualStack=false",
+			args: "--feature-gates=IPv6DualStack=false",
+		},
+		{
+			name: "feature gate PublicKeysECDSA=true",
+			args: "--feature-gates=PublicKeysECDSA=true",
+		},
 	}
 
 	for _, rt := range initTest {
-		_, _, actual := RunCmd(*kubeadmPath, "init", rt.args, "--skip-preflight-checks")
-		if (actual == nil) != rt.expected {
-			t.Errorf(
-				"failed CmdInitArgsMixed running 'kubeadm init %s' with an error: %v\n\texpected: %t\n\t  actual: %t",
-				rt.args,
-				actual,
-				rt.expected,
-				(actual == nil),
-			)
-		}
-		kubeadmReset()
+		t.Run(rt.name, func(t *testing.T) {
+			_, _, exitcode, err := runKubeadmInit(rt.args)
+			if exitcode == PanicExitcode {
+				t.Fatalf(dedent.Dedent(`
+							CmdInitFeatureGates test case %q failed with an error: %v
+							command 'kubeadm init %s'
+                got exit code: %t (panic); unexpected
+							`),
+					rt.name,
+					err,
+					rt.args,
+					PanicExitcode,
+				)
+			}
+		})
 	}
 }

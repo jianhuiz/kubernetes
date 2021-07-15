@@ -1,6 +1,6 @@
 # Quobyte API Clients
 
-Get the quoybte api client
+Get the quobyte api client
 
 ```bash
 go get github.com/quobyte/api
@@ -18,11 +18,16 @@ import (
 
 func main() {
     client := quobyte_api.NewQuobyteClient("http://apiserver:7860", "user", "password")
+    client.SetAPIRetryPolicy(quobyte_api.RetryInfinitely) // Default quobyte_api.RetryInteractive
     req := &quobyte_api.CreateVolumeRequest{
         Name:              "MyVolume",
         RootUserID:        "root",
         RootGroupID:       "root",
         ConfigurationName: "BASE",
+        Labels: []quobyte_api.Label{
+            {Name: "label1", Value: "value1"},
+            {Name: "label2", Value: "value2"},
+        },
     }
 
     volumeUUID, err := client.CreateVolume(req)

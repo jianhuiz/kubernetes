@@ -21,14 +21,17 @@ import (
 	"testing"
 
 	networkingv1 "k8s.io/api/networking/v1"
-
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/kubernetes/pkg/api"
-	_ "k8s.io/kubernetes/pkg/api/install"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	_ "k8s.io/kubernetes/pkg/apis/core/install"
 	_ "k8s.io/kubernetes/pkg/apis/networking/install"
 	. "k8s.io/kubernetes/pkg/apis/networking/v1"
+	"k8s.io/kubernetes/pkg/features"
+	utilpointer "k8s.io/utils/pointer"
 )
 
 func TestSetDefaultNetworkPolicy(t *testing.T) {
@@ -235,19 +238,146 @@ func TestSetDefaultNetworkPolicy(t *testing.T) {
 	}
 }
 
+func TestSetDefaultsForIngressClassParametersReference(t *testing.T) {
+	tests := []struct {
+		name                            string
+		original                        *networkingv1.IngressClass
+		expected                        *networkingv1.IngressClass
+		enableNamespaceScopedParamsGate bool
+	}{
+		{
+			name: "populated parameters sets the default Scope when feature is enabled",
+			original: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+					Parameters: &networkingv1.IngressClassParametersReference{
+						Kind: "k",
+						Name: "n",
+					},
+				},
+			},
+			expected: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+					Parameters: &networkingv1.IngressClassParametersReference{
+						Kind:  "k",
+						Name:  "n",
+						Scope: utilpointer.StringPtr(networkingv1.IngressClassParametersReferenceScopeCluster),
+					},
+				},
+			},
+			enableNamespaceScopedParamsGate: true,
+		},
+		{
+			name: "existing scope is not overridden when feature is enabled",
+			original: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+					Parameters: &networkingv1.IngressClassParametersReference{
+						Kind:      "k",
+						Name:      "n",
+						Scope:     utilpointer.StringPtr(networkingv1.IngressClassParametersReferenceScopeNamespace),
+						Namespace: utilpointer.StringPtr("foo-ns"),
+					},
+				},
+			},
+			expected: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+					Parameters: &networkingv1.IngressClassParametersReference{
+						Kind:      "k",
+						Name:      "n",
+						Scope:     utilpointer.StringPtr(networkingv1.IngressClassParametersReferenceScopeNamespace),
+						Namespace: utilpointer.StringPtr("foo-ns"),
+					},
+				},
+			},
+			enableNamespaceScopedParamsGate: true,
+		},
+		{
+			name: "empty Parameters does not set the default Scope when feature is enabled",
+			original: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+				},
+			},
+			expected: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+				},
+			},
+			enableNamespaceScopedParamsGate: true,
+		},
+		{
+			name: "populated parameters does not set the default Scope when feature is disabled",
+			original: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+					Parameters: &networkingv1.IngressClassParametersReference{
+						Kind: "k",
+						Name: "n",
+					},
+				},
+			},
+			expected: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+					Parameters: &networkingv1.IngressClassParametersReference{
+						Kind: "k",
+						Name: "n",
+					},
+				},
+			},
+			enableNamespaceScopedParamsGate: false,
+		},
+		{
+			name: "empty Parameters does not set the default Scope when feature is disabled",
+			original: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+				},
+			},
+			expected: &networkingv1.IngressClass{
+				Spec: networkingv1.IngressClassSpec{
+					Controller: "controller",
+				},
+			},
+			enableNamespaceScopedParamsGate: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			original := test.original
+			expected := test.expected
+			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.IngressClassNamespacedParams, test.enableNamespaceScopedParamsGate)()
+			obj2 := roundTrip(t, runtime.Object(original))
+			got, ok := obj2.(*networkingv1.IngressClass)
+			if !ok {
+				t.Errorf("unexpected object: %v", got)
+				t.FailNow()
+			}
+			if !apiequality.Semantic.DeepEqual(got.Spec, expected.Spec) {
+				t.Errorf("got different than expected\ngot:\n\t%+v\nexpected:\n\t%+v", got.Spec, expected.Spec)
+			}
+		})
+	}
+}
+
 func roundTrip(t *testing.T, obj runtime.Object) runtime.Object {
-	data, err := runtime.Encode(api.Codecs.LegacyCodec(SchemeGroupVersion), obj)
+	t.Helper()
+	data, err := runtime.Encode(legacyscheme.Codecs.LegacyCodec(SchemeGroupVersion), obj)
 	if err != nil {
 		t.Errorf("%v\n %#v", err, obj)
 		return nil
 	}
-	obj2, err := runtime.Decode(api.Codecs.UniversalDecoder(), data)
+	obj2, err := runtime.Decode(legacyscheme.Codecs.UniversalDecoder(), data)
 	if err != nil {
 		t.Errorf("%v\nData: %s\nSource: %#v", err, string(data), obj)
 		return nil
 	}
 	obj3 := reflect.New(reflect.TypeOf(obj).Elem()).Interface().(runtime.Object)
-	err = api.Scheme.Convert(obj2, obj3, nil)
+	err = legacyscheme.Scheme.Convert(obj2, obj3, nil)
 	if err != nil {
 		t.Errorf("%v\nSource: %#v", err, obj2)
 		return nil

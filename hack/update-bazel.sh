@@ -17,25 +17,32 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-export KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
-source "${KUBE_ROOT}/hack/lib/init.sh"
+KUBE_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 
-# Remove generated files prior to running kazel.
-# TODO(spxtr): Remove this line once Bazel is the only way to build.
-rm -f "${KUBE_ROOT}/pkg/generated/openapi/zz_generated.openapi.go"
+# delete all bazel related files not in vendor/
+find "${KUBE_ROOT}" \
+  \( \
+    -name BUILD \
+    -o -name BUILD.bazel \
+    -o -name '*.bzl' \
+  \) \
+  -not \
+  \( \
+    -path "${KUBE_ROOT}"'/vendor*' \
+  \) \
+  -delete
 
-# The git commit sha1s here should match the values in $KUBE_ROOT/WORKSPACE.
-kube::util::go_install_from_commit \
-    github.com/kubernetes/repo-infra/kazel \
-    4eaf9e671bbb549fb4ec292cf251f921d7ef80ac
-kube::util::go_install_from_commit \
-    github.com/bazelbuild/rules_go/go/tools/gazelle/gazelle \
-    82483596ec203eb9c1849937636f4cbed83733eb
+# remove additional one-off bazel related files
+# NOTE: most of these will be pairs of symlinked location in "${KUBE_ROOT}/"
+# and the actual location in "${KUBE_ROOT}/build/root/"
+rm -f \
+  "${KUBE_ROOT}/build/root/BUILD.root" \
+  "${KUBE_ROOT}/WORKSPACE" \
+  "${KUBE_ROOT}/build/root/WORKSPACE" \
+  "${KUBE_ROOT}/.bazelrc" \
+  "${KUBE_ROOT}/build/root/.bazelrc" \
+  "${KUBE_ROOT}/.bazelversion" \
+  "${KUBE_ROOT}/build/root/.bazelversion" \
+  "${KUBE_ROOT}/.kazelcfg.json" \
+  "${KUBE_ROOT}/build/root/.kazelcfg.json"
 
-touch "${KUBE_ROOT}/vendor/BUILD"
-
-gazelle fix \
-    -build_file_name=BUILD,BUILD.bazel \
-    -external=vendored \
-    -mode=fix
-kazel

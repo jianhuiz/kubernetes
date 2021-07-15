@@ -18,13 +18,14 @@ package transport
 
 import (
 	"bytes"
-	"io/ioutil"
+	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"k8s.io/klog/v2"
 )
 
 type testRoundTripper struct {
@@ -36,6 +37,91 @@ type testRoundTripper struct {
 func (rt *testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	rt.Request = req
 	return rt.Response, rt.Err
+}
+
+func TestMaskValue(t *testing.T) {
+	tcs := []struct {
+		key      string
+		value    string
+		expected string
+	}{
+		{
+			key:      "Authorization",
+			value:    "Basic YWxhZGRpbjpvcGVuc2VzYW1l",
+			expected: "Basic <masked>",
+		},
+		{
+			key:      "Authorization",
+			value:    "basic",
+			expected: "basic",
+		},
+		{
+			key:      "Authorization",
+			value:    "Basic",
+			expected: "Basic",
+		},
+		{
+			key:      "Authorization",
+			value:    "Bearer cn389ncoiwuencr",
+			expected: "Bearer <masked>",
+		},
+		{
+			key:      "Authorization",
+			value:    "Bearer",
+			expected: "Bearer",
+		},
+		{
+			key:      "Authorization",
+			value:    "bearer",
+			expected: "bearer",
+		},
+		{
+			key:      "Authorization",
+			value:    "bearer ",
+			expected: "bearer",
+		},
+		{
+			key:      "Authorization",
+			value:    "Negotiate cn389ncoiwuencr",
+			expected: "Negotiate <masked>",
+		},
+		{
+			key:      "ABC",
+			value:    "Negotiate cn389ncoiwuencr",
+			expected: "Negotiate cn389ncoiwuencr",
+		},
+		{
+			key:      "Authorization",
+			value:    "Negotiate",
+			expected: "Negotiate",
+		},
+		{
+			key:      "Authorization",
+			value:    "Negotiate ",
+			expected: "Negotiate",
+		},
+		{
+			key:      "Authorization",
+			value:    "negotiate",
+			expected: "negotiate",
+		},
+		{
+			key:      "Authorization",
+			value:    "abc cn389ncoiwuencr",
+			expected: "<masked>",
+		},
+		{
+			key:      "Authorization",
+			value:    "",
+			expected: "",
+		},
+	}
+	for _, tc := range tcs {
+		maskedValue := maskValue(tc.key, tc.value)
+		if tc.expected != maskedValue {
+			t.Errorf("unexpected value %s, given %s.", maskedValue, tc.value)
+		}
+	}
 }
 
 func TestBearerAuthRoundTripper(t *testing.T) {
@@ -129,6 +215,32 @@ func TestImpersonationRoundTripper(t *testing.T) {
 				ImpersonateUserExtraHeaderPrefix + "Second": {"B", "b"},
 			},
 		},
+		{
+			name: "escape handling",
+			impersonationConfig: ImpersonationConfig{
+				UserName: "user",
+				Extra: map[string][]string{
+					"test.example.com/thing.thing": {"A", "a"},
+				},
+			},
+			expected: map[string][]string{
+				ImpersonateUserHeader: {"user"},
+				ImpersonateUserExtraHeaderPrefix + `Test.example.com%2fthing.thing`: {"A", "a"},
+			},
+		},
+		{
+			name: "double escape handling",
+			impersonationConfig: ImpersonationConfig{
+				UserName: "user",
+				Extra: map[string][]string{
+					"test.example.com/thing.thing%20another.thing": {"A", "a"},
+				},
+			},
+			expected: map[string][]string{
+				ImpersonateUserHeader: {"user"},
+				ImpersonateUserExtraHeaderPrefix + `Test.example.com%2fthing.thing%2520another.thing`: {"A", "a"},
+			},
+		},
 	}
 
 	for _, tc := range tcs {
@@ -163,9 +275,10 @@ func TestImpersonationRoundTripper(t *testing.T) {
 
 func TestAuthProxyRoundTripper(t *testing.T) {
 	for n, tc := range map[string]struct {
-		username string
-		groups   []string
-		extra    map[string][]string
+		username      string
+		groups        []string
+		extra         map[string][]string
+		expectedExtra map[string][]string
 	}{
 		"allfields": {
 			username: "user",
@@ -173,6 +286,34 @@ func TestAuthProxyRoundTripper(t *testing.T) {
 			extra: map[string][]string{
 				"one": {"alpha", "bravo"},
 				"two": {"charlie", "delta"},
+			},
+			expectedExtra: map[string][]string{
+				"one": {"alpha", "bravo"},
+				"two": {"charlie", "delta"},
+			},
+		},
+		"escaped extra": {
+			username: "user",
+			groups:   []string{"groupA", "groupB"},
+			extra: map[string][]string{
+				"one":             {"alpha", "bravo"},
+				"example.com/two": {"charlie", "delta"},
+			},
+			expectedExtra: map[string][]string{
+				"one":               {"alpha", "bravo"},
+				"example.com%2ftwo": {"charlie", "delta"},
+			},
+		},
+		"double escaped extra": {
+			username: "user",
+			groups:   []string{"groupA", "groupB"},
+			extra: map[string][]string{
+				"one":                     {"alpha", "bravo"},
+				"example.com/two%20three": {"charlie", "delta"},
+			},
+			expectedExtra: map[string][]string{
+				"one":                         {"alpha", "bravo"},
+				"example.com%2ftwo%2520three": {"charlie", "delta"},
 			},
 		},
 	} {
@@ -214,66 +355,163 @@ func TestAuthProxyRoundTripper(t *testing.T) {
 				actualExtra[extraKey] = append(actualExtra[key], values...)
 			}
 		}
-		if e, a := tc.extra, actualExtra; !reflect.DeepEqual(e, a) {
+		if e, a := tc.expectedExtra, actualExtra; !reflect.DeepEqual(e, a) {
 			t.Errorf("%s expected %v, got %v", n, e, a)
 			continue
 		}
 	}
 }
 
-func TestCacheRoundTripper(t *testing.T) {
-	rt := &testRoundTripper{}
-	cacheDir, err := ioutil.TempDir("", "cache-rt")
-	defer os.RemoveAll(cacheDir)
-	if err != nil {
-		t.Fatal(err)
+// TestHeaderEscapeRoundTrip tests to see if foo == url.PathUnescape(headerEscape(foo))
+// This behavior is important for client -> API server transmission of extra values.
+func TestHeaderEscapeRoundTrip(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		name string
+		key  string
+	}{
+		{
+			name: "alpha",
+			key:  "alphabetical",
+		},
+		{
+			name: "alphanumeric",
+			key:  "alph4num3r1c",
+		},
+		{
+			name: "percent encoded",
+			key:  "percent%20encoded",
+		},
+		{
+			name: "almost percent encoded",
+			key:  "almost%zzpercent%xxencoded",
+		},
+		{
+			name: "illegal char & percent encoding",
+			key:  "example.com/percent%20encoded",
+		},
+		{
+			name: "weird unicode stuff",
+			key:  "example.com/ᛒᚥᛏᛖᚥᚢとロビン",
+		},
+		{
+			name: "header legal chars",
+			key:  "abc123!#$+.-_*\\^`~|'",
+		},
+		{
+			name: "legal path, illegal header",
+			key:  "@=:",
+		},
 	}
-	cache := NewCacheRoundTripper(cacheDir, rt)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			escaped := headerKeyEscape(tc.key)
+			unescaped, err := url.PathUnescape(escaped)
+			if err != nil {
+				t.Fatalf("url.PathUnescape(%q) returned error: %v", escaped, err)
+			}
+			if tc.key != unescaped {
+				t.Errorf("url.PathUnescape(headerKeyEscape(%q)) returned %q, wanted %q", tc.key, unescaped, tc.key)
+			}
+		})
+	}
+}
 
-	// First call, caches the response
+func TestDebuggingRoundTripper(t *testing.T) {
+	t.Parallel()
+
+	rawURL := "https://127.0.0.1:12345/api/v1/pods?limit=500"
 	req := &http.Request{
 		Method: http.MethodGet,
-		URL:    &url.URL{Host: "localhost"},
+		Header: map[string][]string{
+			"Authorization":  {"bearer secretauthtoken"},
+			"X-Test-Request": {"test"},
+		},
 	}
-	rt.Response = &http.Response{
-		Header:     http.Header{"ETag": []string{`"123456"`}},
-		Body:       ioutil.NopCloser(bytes.NewReader([]byte("Content"))),
+	res := &http.Response{
+		Status:     "OK",
 		StatusCode: http.StatusOK,
+		Header: map[string][]string{
+			"X-Test-Response": {"test"},
+		},
 	}
-	resp, err := cache.RoundTrip(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "Content" {
-		t.Errorf(`Expected Body to be "Content", got %q`, string(content))
+	tcs := []struct {
+		levels              []DebugLevel
+		expectedOutputLines []string
+	}{
+		{
+			levels:              []DebugLevel{DebugJustURL},
+			expectedOutputLines: []string{fmt.Sprintf("%s %s", req.Method, rawURL)},
+		},
+		{
+			levels: []DebugLevel{DebugRequestHeaders},
+			expectedOutputLines: func() []string {
+				lines := []string{fmt.Sprintf("Request Headers:\n")}
+				for key, values := range req.Header {
+					for _, value := range values {
+						if key == "Authorization" {
+							value = "bearer <masked>"
+						}
+						lines = append(lines, fmt.Sprintf("    %s: %s\n", key, value))
+					}
+				}
+				return lines
+			}(),
+		},
+		{
+			levels: []DebugLevel{DebugResponseHeaders},
+			expectedOutputLines: func() []string {
+				lines := []string{fmt.Sprintf("Response Headers:\n")}
+				for key, values := range res.Header {
+					for _, value := range values {
+						lines = append(lines, fmt.Sprintf("    %s: %s\n", key, value))
+					}
+				}
+				return lines
+			}(),
+		},
+		{
+			levels:              []DebugLevel{DebugURLTiming},
+			expectedOutputLines: []string{fmt.Sprintf("%s %s %s", req.Method, rawURL, res.Status)},
+		},
+		{
+			levels:              []DebugLevel{DebugResponseStatus},
+			expectedOutputLines: []string{fmt.Sprintf("Response Status: %s", res.Status)},
+		},
+		{
+			levels:              []DebugLevel{DebugCurlCommand},
+			expectedOutputLines: []string{fmt.Sprintf("curl -v -X")},
+		},
 	}
 
-	// Second call, returns cached response
-	req = &http.Request{
-		Method: http.MethodGet,
-		URL:    &url.URL{Host: "localhost"},
-	}
-	rt.Response = &http.Response{
-		StatusCode: http.StatusNotModified,
-		Body:       ioutil.NopCloser(bytes.NewReader([]byte("Other Content"))),
-	}
+	for _, tc := range tcs {
+		// hijack the klog output
+		tmpWriteBuffer := bytes.NewBuffer(nil)
+		klog.SetOutput(tmpWriteBuffer)
+		klog.LogToStderr(false)
 
-	resp, err = cache.RoundTrip(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+		// parse rawURL
+		parsedURL, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatalf("url.Parse(%q) returned error: %v", rawURL, err)
+		}
+		req.URL = parsedURL
 
-	// Read body and make sure we have the initial content
-	content, err = ioutil.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "Content" {
-		t.Errorf("Invalid content read from cache %q", string(content))
+		// execute the round tripper
+		rt := &testRoundTripper{
+			Response: res,
+		}
+		NewDebuggingRoundTripper(rt, tc.levels...).RoundTrip(req)
+
+		// call Flush to ensure the text isn't still buffered
+		klog.Flush()
+
+		// check if klog's output contains the expected lines
+		actual := tmpWriteBuffer.String()
+		for _, expected := range tc.expectedOutputLines {
+			if !strings.Contains(actual, expected) {
+				t.Errorf("%q does not contain expected output %q", actual, expected)
+			}
+		}
 	}
 }

@@ -17,18 +17,23 @@ limitations under the License.
 package persistentvolumeclaim
 
 import (
+	"context"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/validation"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
+	pvcutil "k8s.io/kubernetes/pkg/api/persistentvolumeclaim"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/apis/core/validation"
+	"k8s.io/kubernetes/pkg/features"
+	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
 )
 
 // persistentvolumeclaimStrategy implements behavior for PersistentVolumeClaim objects
@@ -39,21 +44,51 @@ type persistentvolumeclaimStrategy struct {
 
 // Strategy is the default logic that applies when creating and updating PersistentVolumeClaim
 // objects via the REST API.
-var Strategy = persistentvolumeclaimStrategy{api.Scheme, names.SimpleNameGenerator}
+var Strategy = persistentvolumeclaimStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
 
 func (persistentvolumeclaimStrategy) NamespaceScoped() bool {
 	return true
 }
 
-// PrepareForCreate clears the Status field which is not allowed to be set by end users on creation.
-func (persistentvolumeclaimStrategy) PrepareForCreate(ctx genericapirequest.Context, obj runtime.Object) {
-	pv := obj.(*api.PersistentVolumeClaim)
-	pv.Status = api.PersistentVolumeClaimStatus{}
+// GetResetFields returns the set of fields that get reset by the strategy
+// and should not be modified by the user.
+func (persistentvolumeclaimStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
+	fields := map[fieldpath.APIVersion]*fieldpath.Set{
+		"v1": fieldpath.NewSet(
+			fieldpath.MakePathOrDie("status"),
+		),
+	}
+
+	return fields
 }
 
-func (persistentvolumeclaimStrategy) Validate(ctx genericapirequest.Context, obj runtime.Object) field.ErrorList {
+// PrepareForCreate clears the Status field which is not allowed to be set by end users on creation.
+func (persistentvolumeclaimStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
 	pvc := obj.(*api.PersistentVolumeClaim)
-	return validation.ValidatePersistentVolumeClaim(pvc)
+	pvc.Status = api.PersistentVolumeClaimStatus{}
+
+	pvcutil.DropDisabledFields(&pvc.Spec)
+
+	// For data sources, we need to do 2 things to implement KEP 1495
+
+	// First drop invalid values from spec.dataSource (anything other than PVC or
+	// VolumeSnapshot) if certain conditions are met.
+	pvcutil.EnforceDataSourceBackwardsCompatibility(&pvc.Spec, nil)
+
+	// Second copy dataSource -> dataSourceRef or dataSourceRef -> dataSource if one of them
+	// is nil and the other is non-nil
+	pvcutil.NormalizeDataSources(&pvc.Spec)
+}
+
+func (persistentvolumeclaimStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
+	pvc := obj.(*api.PersistentVolumeClaim)
+	opts := validation.ValidationOptionsForPersistentVolumeClaim(pvc, nil)
+	return validation.ValidatePersistentVolumeClaim(pvc, opts)
+}
+
+// WarningsOnCreate returns warnings for the creation of the given object.
+func (persistentvolumeclaimStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
+	return nil
 }
 
 // Canonicalize normalizes the object after validation.
@@ -65,15 +100,33 @@ func (persistentvolumeclaimStrategy) AllowCreateOnUpdate() bool {
 }
 
 // PrepareForUpdate sets the Status field which is not allowed to be set by end users on update
-func (persistentvolumeclaimStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, old runtime.Object) {
+func (persistentvolumeclaimStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	newPvc := obj.(*api.PersistentVolumeClaim)
 	oldPvc := old.(*api.PersistentVolumeClaim)
 	newPvc.Status = oldPvc.Status
+
+	pvcutil.DropDisabledFields(&newPvc.Spec)
+
+	// We need to use similar logic to PrepareForCreate here both to preserve backwards
+	// compatibility with the old behavior (ignoring of garbage dataSources at both create
+	// and update time) and also for compatibility with older clients, that might omit
+	// the dataSourceRef field which we filled in automatically, so we have to fill it
+	// in again here.
+	pvcutil.EnforceDataSourceBackwardsCompatibility(&newPvc.Spec, &oldPvc.Spec)
+	pvcutil.NormalizeDataSources(&newPvc.Spec)
 }
 
-func (persistentvolumeclaimStrategy) ValidateUpdate(ctx genericapirequest.Context, obj, old runtime.Object) field.ErrorList {
-	errorList := validation.ValidatePersistentVolumeClaim(obj.(*api.PersistentVolumeClaim))
-	return append(errorList, validation.ValidatePersistentVolumeClaimUpdate(obj.(*api.PersistentVolumeClaim), old.(*api.PersistentVolumeClaim))...)
+func (persistentvolumeclaimStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
+	newPvc := obj.(*api.PersistentVolumeClaim)
+	oldPvc := old.(*api.PersistentVolumeClaim)
+	opts := validation.ValidationOptionsForPersistentVolumeClaim(newPvc, oldPvc)
+	errorList := validation.ValidatePersistentVolumeClaim(newPvc, opts)
+	return append(errorList, validation.ValidatePersistentVolumeClaimUpdate(newPvc, oldPvc, opts)...)
+}
+
+// WarningsOnUpdate returns warnings for the given update.
+func (persistentvolumeclaimStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
+	return nil
 }
 
 func (persistentvolumeclaimStrategy) AllowUnconditionalUpdate() bool {
@@ -86,24 +139,44 @@ type persistentvolumeclaimStatusStrategy struct {
 
 var StatusStrategy = persistentvolumeclaimStatusStrategy{Strategy}
 
+// GetResetFields returns the set of fields that get reset by the strategy
+// and should not be modified by the user.
+func (persistentvolumeclaimStatusStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
+	fields := map[fieldpath.APIVersion]*fieldpath.Set{
+		"v1": fieldpath.NewSet(
+			fieldpath.MakePathOrDie("spec"),
+		),
+	}
+
+	return fields
+}
+
 // PrepareForUpdate sets the Spec field which is not allowed to be changed when updating a PV's Status
-func (persistentvolumeclaimStatusStrategy) PrepareForUpdate(ctx genericapirequest.Context, obj, old runtime.Object) {
+func (persistentvolumeclaimStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object) {
 	newPv := obj.(*api.PersistentVolumeClaim)
 	oldPv := old.(*api.PersistentVolumeClaim)
 	newPv.Spec = oldPv.Spec
+	if !utilfeature.DefaultFeatureGate.Enabled(features.ExpandPersistentVolumes) && oldPv.Status.Conditions == nil {
+		newPv.Status.Conditions = nil
+	}
 }
 
-func (persistentvolumeclaimStatusStrategy) ValidateUpdate(ctx genericapirequest.Context, obj, old runtime.Object) field.ErrorList {
+func (persistentvolumeclaimStatusStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	return validation.ValidatePersistentVolumeClaimStatusUpdate(obj.(*api.PersistentVolumeClaim), old.(*api.PersistentVolumeClaim))
 }
 
+// WarningsOnUpdate returns warnings for the given update.
+func (persistentvolumeclaimStatusStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object) []string {
+	return nil
+}
+
 // GetAttrs returns labels and fields of a given object for filtering purposes.
-func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, bool, error) {
+func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 	persistentvolumeclaimObj, ok := obj.(*api.PersistentVolumeClaim)
 	if !ok {
-		return nil, nil, false, fmt.Errorf("not a persistentvolumeclaim")
+		return nil, nil, fmt.Errorf("not a persistentvolumeclaim")
 	}
-	return labels.Set(persistentvolumeclaimObj.Labels), PersistentVolumeClaimToSelectableFields(persistentvolumeclaimObj), persistentvolumeclaimObj.Initializers != nil, nil
+	return labels.Set(persistentvolumeclaimObj.Labels), PersistentVolumeClaimToSelectableFields(persistentvolumeclaimObj), nil
 }
 
 // MatchPersistentVolumeClaim returns a generic matcher for a given label and field selector.

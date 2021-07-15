@@ -1,3 +1,5 @@
+// +build !dockerless
+
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -17,9 +19,11 @@ limitations under the License.
 package dockershim
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,8 +31,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	runtimeapi "k8s.io/kubernetes/pkg/kubelet/apis/cri/v1alpha1/runtime"
+	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
 	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
+)
+
+const (
+	sandboxID   = "sandboxid"
+	containerID = "containerid"
 )
 
 // A helper to create a basic config.
@@ -42,6 +51,71 @@ func makeContainerConfig(sConfig *runtimeapi.PodSandboxConfig, name, image strin
 		Labels:      labels,
 		Annotations: annotations,
 	}
+}
+
+func getTestCTX() context.Context {
+	return context.Background()
+}
+
+// TestConcurrentlyCreateAndDeleteContainers is a regression test for #93771, which ensures
+// kubelet would not panic on concurrent writes to `dockerService.containerCleanupInfos`.
+func TestConcurrentlyCreateAndDeleteContainers(t *testing.T) {
+	ds, _, _ := newTestDockerService()
+	podName, namespace := "foo", "bar"
+	containerName, image := "sidecar", "logger"
+
+	const count = 20
+	configs := make([]*runtimeapi.ContainerConfig, 0, count)
+	sConfigs := make([]*runtimeapi.PodSandboxConfig, 0, count)
+	for i := 0; i < count; i++ {
+		s := makeSandboxConfig(fmt.Sprintf("%s%d", podName, i),
+			fmt.Sprintf("%s%d", namespace, i), fmt.Sprintf("%d", i), 0)
+		labels := map[string]string{"concurrent-test": fmt.Sprintf("label%d", i)}
+		c := makeContainerConfig(s, fmt.Sprintf("%s%d", containerName, i),
+			fmt.Sprintf("%s:v%d", image, i), uint32(i), labels, nil)
+		sConfigs = append(sConfigs, s)
+		configs = append(configs, c)
+	}
+
+	containerIDs := make(chan string, len(configs)) // make channel non-blocking to simulate concurrent containers creation
+
+	var (
+		creationWg sync.WaitGroup
+		deletionWg sync.WaitGroup
+	)
+
+	creationWg.Add(len(configs))
+
+	go func() {
+		creationWg.Wait()
+		close(containerIDs)
+	}()
+	for i := range configs {
+		go func(i int) {
+			defer creationWg.Done()
+			// We don't care about the sandbox id; pass a bogus one.
+			sandboxID := fmt.Sprintf("sandboxid%d", i)
+			req := &runtimeapi.CreateContainerRequest{PodSandboxId: sandboxID, Config: configs[i], SandboxConfig: sConfigs[i]}
+			createResp, err := ds.CreateContainer(getTestCTX(), req)
+			if err != nil {
+				t.Errorf("CreateContainer: %v", err)
+				return
+			}
+			containerIDs <- createResp.ContainerId
+		}(i)
+	}
+
+	for containerID := range containerIDs {
+		deletionWg.Add(1)
+		go func(id string) {
+			defer deletionWg.Done()
+			_, err := ds.RemoveContainer(getTestCTX(), &runtimeapi.RemoveContainerRequest{ContainerId: id})
+			if err != nil {
+				t.Errorf("RemoveContainer: %v", err)
+			}
+		}(containerID)
+	}
+	deletionWg.Wait()
 }
 
 // TestListContainers creates several containers and then list them to check
@@ -70,10 +144,12 @@ func TestListContainers(t *testing.T) {
 	for i := range configs {
 		// We don't care about the sandbox id; pass a bogus one.
 		sandboxID := fmt.Sprintf("sandboxid%d", i)
-		id, err := ds.CreateContainer(sandboxID, configs[i], sConfigs[i])
-		assert.NoError(t, err)
-		err = ds.StartContainer(id)
-		assert.NoError(t, err)
+		req := &runtimeapi.CreateContainerRequest{PodSandboxId: sandboxID, Config: configs[i], SandboxConfig: sConfigs[i]}
+		createResp, err := ds.CreateContainer(getTestCTX(), req)
+		require.NoError(t, err)
+		id := createResp.ContainerId
+		_, err = ds.StartContainer(getTestCTX(), &runtimeapi.StartContainerRequest{ContainerId: id})
+		require.NoError(t, err)
 
 		imageRef := "" // FakeDockerClient doesn't populate ImageRef yet.
 		// Prepend to the expected list because ListContainers returns
@@ -90,10 +166,10 @@ func TestListContainers(t *testing.T) {
 			Annotations:  configs[i].Annotations,
 		}}, expected...)
 	}
-	containers, err := ds.ListContainers(nil)
-	assert.NoError(t, err)
-	assert.Len(t, containers, len(expected))
-	assert.Equal(t, expected, containers)
+	listResp, err := ds.ListContainers(getTestCTX(), &runtimeapi.ListContainersRequest{})
+	require.NoError(t, err)
+	assert.Len(t, listResp.Containers, len(expected))
+	assert.Equal(t, expected, listResp.Containers)
 }
 
 // TestContainerStatus tests the basic lifecycle operations and verify that
@@ -106,9 +182,6 @@ func TestContainerStatus(t *testing.T) {
 	imageName := "iamimage"
 	config := makeContainerConfig(sConfig, "pause", imageName, 0, labels, annotations)
 
-	var defaultTime time.Time
-	dt := defaultTime.UnixNano()
-	ct, st, ft := dt, dt, dt
 	state := runtimeapi.ContainerState_CONTAINER_CREATED
 	imageRef := DockerImageIDPrefix + imageName
 	// The following variables are not set in FakeDockerClient.
@@ -117,9 +190,6 @@ func TestContainerStatus(t *testing.T) {
 
 	expected := &runtimeapi.ContainerStatus{
 		State:       state,
-		CreatedAt:   ct,
-		StartedAt:   st,
-		FinishedAt:  ft,
 		Metadata:    config.Metadata,
 		Image:       config.Image,
 		ImageRef:    imageRef,
@@ -136,32 +206,36 @@ func TestContainerStatus(t *testing.T) {
 	// Create the container.
 	fClock.SetTime(time.Now().Add(-1 * time.Hour))
 	expected.CreatedAt = fClock.Now().UnixNano()
-	const sandboxId = "sandboxid"
-	id, err := ds.CreateContainer(sandboxId, config, sConfig)
-	assert.NoError(t, err)
+
+	req := &runtimeapi.CreateContainerRequest{PodSandboxId: sandboxID, Config: config, SandboxConfig: sConfig}
+	createResp, err := ds.CreateContainer(getTestCTX(), req)
+	require.NoError(t, err)
+	id := createResp.ContainerId
 
 	// Check internal labels
 	c, err := fDocker.InspectContainer(id)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, c.Config.Labels[containerTypeLabelKey], containerTypeLabelContainer)
-	assert.Equal(t, c.Config.Labels[sandboxIDLabelKey], sandboxId)
+	assert.Equal(t, c.Config.Labels[sandboxIDLabelKey], sandboxID)
 
 	// Set the id manually since we don't know the id until it's created.
 	expected.Id = id
 	assert.NoError(t, err)
-	status, err := ds.ContainerStatus(id)
-	assert.NoError(t, err)
-	assert.Equal(t, expected, status)
+	resp, err := ds.ContainerStatus(getTestCTX(), &runtimeapi.ContainerStatusRequest{ContainerId: id})
+	require.NoError(t, err)
+	assert.Equal(t, expected, resp.Status)
 
 	// Advance the clock and start the container.
 	fClock.SetTime(time.Now())
 	expected.StartedAt = fClock.Now().UnixNano()
 	expected.State = runtimeapi.ContainerState_CONTAINER_RUNNING
 
-	err = ds.StartContainer(id)
-	assert.NoError(t, err)
-	status, err = ds.ContainerStatus(id)
-	assert.Equal(t, expected, status)
+	_, err = ds.StartContainer(getTestCTX(), &runtimeapi.StartContainerRequest{ContainerId: id})
+	require.NoError(t, err)
+
+	resp, err = ds.ContainerStatus(getTestCTX(), &runtimeapi.ContainerStatusRequest{ContainerId: id})
+	require.NoError(t, err)
+	assert.Equal(t, expected, resp.Status)
 
 	// Advance the clock and stop the container.
 	fClock.SetTime(time.Now().Add(1 * time.Hour))
@@ -169,16 +243,17 @@ func TestContainerStatus(t *testing.T) {
 	expected.State = runtimeapi.ContainerState_CONTAINER_EXITED
 	expected.Reason = "Completed"
 
-	err = ds.StopContainer(id, 0)
+	_, err = ds.StopContainer(getTestCTX(), &runtimeapi.StopContainerRequest{ContainerId: id, Timeout: int64(0)})
 	assert.NoError(t, err)
-	status, err = ds.ContainerStatus(id)
-	assert.Equal(t, expected, status)
+	resp, err = ds.ContainerStatus(getTestCTX(), &runtimeapi.ContainerStatusRequest{ContainerId: id})
+	require.NoError(t, err)
+	assert.Equal(t, expected, resp.Status)
 
 	// Remove the container.
-	err = ds.RemoveContainer(id)
-	assert.NoError(t, err)
-	status, err = ds.ContainerStatus(id)
-	assert.Error(t, err, fmt.Sprintf("status of container: %+v", status))
+	_, err = ds.RemoveContainer(getTestCTX(), &runtimeapi.RemoveContainerRequest{ContainerId: id})
+	require.NoError(t, err)
+	resp, err = ds.ContainerStatus(getTestCTX(), &runtimeapi.ContainerStatusRequest{ContainerId: id})
+	assert.Error(t, err, fmt.Sprintf("status of container: %+v", resp))
 }
 
 // TestContainerLogPath tests the container log creation logic.
@@ -192,8 +267,10 @@ func TestContainerLogPath(t *testing.T) {
 	config := makeContainerConfig(sConfig, "pause", "iamimage", 0, nil, nil)
 	config.LogPath = containerLogPath
 
-	const sandboxId = "sandboxid"
-	id, err := ds.CreateContainer(sandboxId, config, sConfig)
+	req := &runtimeapi.CreateContainerRequest{PodSandboxId: sandboxID, Config: config, SandboxConfig: sConfig}
+	createResp, err := ds.CreateContainer(getTestCTX(), req)
+	require.NoError(t, err)
+	id := createResp.ContainerId
 
 	// Check internal container log label
 	c, err := fDocker.InspectContainer(id)
@@ -211,16 +288,16 @@ func TestContainerLogPath(t *testing.T) {
 		assert.Equal(t, kubeletContainerLogPath, newname)
 		return nil
 	}
-	err = ds.StartContainer(id)
-	assert.NoError(t, err)
+	_, err = ds.StartContainer(getTestCTX(), &runtimeapi.StartContainerRequest{ContainerId: id})
+	require.NoError(t, err)
 
-	err = ds.StopContainer(id, 0)
-	assert.NoError(t, err)
+	_, err = ds.StopContainer(getTestCTX(), &runtimeapi.StopContainerRequest{ContainerId: id, Timeout: int64(0)})
+	require.NoError(t, err)
 
 	// Verify container log symlink deletion
 	// symlink is also tentatively deleted at startup
-	err = ds.RemoveContainer(id)
-	assert.NoError(t, err)
+	_, err = ds.RemoveContainer(getTestCTX(), &runtimeapi.RemoveContainerRequest{ContainerId: id})
+	require.NoError(t, err)
 	assert.Equal(t, []string{kubeletContainerLogPath, kubeletContainerLogPath}, fakeOS.Removes)
 }
 
@@ -230,11 +307,9 @@ func TestContainerCreationConflict(t *testing.T) {
 	sConfig := makeSandboxConfig("foo", "bar", "1", 0)
 	config := makeContainerConfig(sConfig, "pause", "iamimage", 0, map[string]string{}, map[string]string{})
 	containerName := makeContainerName(sConfig, config)
-	const sandboxId = "sandboxid"
-	const containerId = "containerid"
-	conflictError := fmt.Errorf("Error response from daemon: Conflict. The name \"/%s\" is already in use by container %s. You have to remove (or rename) that container to be able to reuse that name.",
-		containerName, containerId)
-	noContainerError := fmt.Errorf("Error response from daemon: No such container: %s", containerId)
+	conflictError := fmt.Errorf("Error response from daemon: Conflict. The name \"/%s\" is already in use by container %q. You have to remove (or rename) that container to be able to reuse that name",
+		containerName, containerID)
+	noContainerError := fmt.Errorf("Error response from daemon: No such container: %s", containerID)
 	randomError := fmt.Errorf("random error")
 
 	for desc, test := range map[string]struct {
@@ -280,11 +355,13 @@ func TestContainerCreationConflict(t *testing.T) {
 		if test.removeError != nil {
 			fDocker.InjectError("remove", test.removeError)
 		}
-		id, err := ds.CreateContainer(sandboxId, config, sConfig)
+
+		req := &runtimeapi.CreateContainerRequest{PodSandboxId: sandboxID, Config: config, SandboxConfig: sConfig}
+		createResp, err := ds.CreateContainer(getTestCTX(), req)
 		require.Equal(t, test.expectError, err)
 		assert.NoError(t, fDocker.AssertCalls(test.expectCalls))
 		if err == nil {
-			c, err := fDocker.InspectContainer(id)
+			c, err := fDocker.InspectContainer(createResp.ContainerId)
 			assert.NoError(t, err)
 			assert.Len(t, strings.Split(c.Name, nameDelimiter), test.expectFields)
 		}

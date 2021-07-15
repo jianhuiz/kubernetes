@@ -16,6 +16,8 @@ limitations under the License.
 
 package types
 
+import "strings"
+
 type Version string
 
 func (v Version) String() string {
@@ -27,6 +29,10 @@ func (v Version) NonEmpty() string {
 		return "internalVersion"
 	}
 	return v.String()
+}
+
+func (v Version) PackageName() string {
+	return strings.ToLower(v.NonEmpty())
 }
 
 type Group string
@@ -42,29 +48,50 @@ func (g Group) NonEmpty() string {
 	return string(g)
 }
 
+func (g Group) PackageName() string {
+	parts := strings.Split(g.NonEmpty(), ".")
+	if parts[0] == "internal" && len(parts) > 1 {
+		return strings.ToLower(parts[1] + parts[0])
+	}
+	return strings.ToLower(parts[0])
+}
+
+type PackageVersion struct {
+	Version
+	// The fully qualified package, e.g. k8s.io/kubernetes/pkg/apis/apps, where the types.go is found.
+	Package string
+}
+
 type GroupVersion struct {
 	Group   Group
 	Version Version
 }
 
-type GroupVersions struct {
-	Group    Group
-	Versions []Version
+func (gv GroupVersion) ToAPIVersion() string {
+	if len(gv.Group) > 0 && gv.Group.NonEmpty() != "core" {
+		return gv.Group.String() + "/" + gv.Version.String()
+	} else {
+		return gv.Version.String()
+	}
 }
 
-// GroupVersionPackage contains group name, version name, and the package name client-gen will generate for this group version.
-type GroupVersionPackage struct {
-	Group   Group
-	Version Version
-	// If a user calls a group client without specifying the version (e.g.,
-	// c.Core(), instead of c.CoreV1()), the default version will be returned.
-	IsDefaultVersion      bool
-	GroupVersion          string
-	LowerCaseGroupVersion string
-	PackageName           string
+type GroupVersions struct {
+	// The name of the package for this group, e.g. apps.
+	PackageName string
+	Group       Group
+	Versions    []PackageVersion
+}
+
+// GroupVersionInfo contains all the info around a group version.
+type GroupVersionInfo struct {
+	Group                Group
+	Version              Version
+	PackageAlias         string
+	GroupGoName          string
+	LowerCaseGroupGoName string
 }
 
 type GroupInstallPackage struct {
-	Group              Group
-	InstallPackageName string
+	Group               Group
+	InstallPackageAlias string
 }

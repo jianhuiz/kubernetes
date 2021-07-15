@@ -19,12 +19,12 @@ package node
 import (
 	"fmt"
 
+	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
+
 	rbac "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
-	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
-	"k8s.io/kubernetes/pkg/util/version"
 )
 
 const (
@@ -33,6 +33,8 @@ const (
 	NodeBootstrapperClusterRoleName = "system:node-bootstrapper"
 	// NodeKubeletBootstrap defines the name of the ClusterRoleBinding that lets kubelets post CSRs
 	NodeKubeletBootstrap = "kubeadm:kubelet-bootstrap"
+	// GetNodesClusterRoleName defines the name of the ClusterRole and ClusterRoleBinding to get nodes
+	GetNodesClusterRoleName = "kubeadm:get-nodes"
 
 	// CSRAutoApprovalClusterRoleName defines the name of the auto-bootstrapped ClusterRole for making the csrapprover controller auto-approve the CSR
 	// TODO: This value should be defined in an other, generic authz package instead of here
@@ -47,9 +49,8 @@ const (
 )
 
 // AllowBootstrapTokensToPostCSRs creates RBAC rules in a way the makes Node Bootstrap Tokens able to post CSRs
-func AllowBootstrapTokensToPostCSRs(client clientset.Interface, k8sVersion *version.Version) error {
-
-	fmt.Println("[bootstraptoken] Configured RBAC rules to allow Node Bootstrap tokens to post CSRs in order for nodes to get long term certificate credentials")
+func AllowBootstrapTokensToPostCSRs(client clientset.Interface) error {
+	fmt.Println("[bootstrap-token] configured RBAC rules to allow Node Bootstrap tokens to post CSRs in order for nodes to get long term certificate credentials")
 
 	return apiclient.CreateOrUpdateClusterRoleBinding(client, &rbac.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -63,16 +64,54 @@ func AllowBootstrapTokensToPostCSRs(client clientset.Interface, k8sVersion *vers
 		Subjects: []rbac.Subject{
 			{
 				Kind: rbac.GroupKind,
-				Name: constants.GetNodeBootstrapTokenAuthGroup(k8sVersion),
+				Name: constants.NodeBootstrapTokenAuthGroup,
+			},
+		},
+	})
+}
+
+// AllowBoostrapTokensToGetNodes creates RBAC rules to allow Node Bootstrap Tokens to list nodes
+func AllowBoostrapTokensToGetNodes(client clientset.Interface) error {
+	fmt.Println("[bootstrap-token] configured RBAC rules to allow Node Bootstrap tokens to get nodes")
+
+	if err := apiclient.CreateOrUpdateClusterRole(client, &rbac.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      GetNodesClusterRoleName,
+			Namespace: metav1.NamespaceSystem,
+		},
+		Rules: []rbac.PolicyRule{
+			{
+				Verbs:     []string{"get"},
+				APIGroups: []string{""},
+				Resources: []string{"nodes"},
+			},
+		},
+	}); err != nil {
+		return err
+	}
+
+	return apiclient.CreateOrUpdateClusterRoleBinding(client, &rbac.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      GetNodesClusterRoleName,
+			Namespace: metav1.NamespaceSystem,
+		},
+		RoleRef: rbac.RoleRef{
+			APIGroup: rbac.GroupName,
+			Kind:     "ClusterRole",
+			Name:     GetNodesClusterRoleName,
+		},
+		Subjects: []rbac.Subject{
+			{
+				Kind: rbac.GroupKind,
+				Name: constants.NodeBootstrapTokenAuthGroup,
 			},
 		},
 	})
 }
 
 // AutoApproveNodeBootstrapTokens creates RBAC rules in a way that makes Node Bootstrap Tokens' CSR auto-approved by the csrapprover controller
-func AutoApproveNodeBootstrapTokens(client clientset.Interface, k8sVersion *version.Version) error {
-
-	fmt.Println("[bootstraptoken] Configured RBAC rules to allow the csrapprover controller automatically approve CSRs from a Node Bootstrap Token")
+func AutoApproveNodeBootstrapTokens(client clientset.Interface) error {
+	fmt.Println("[bootstrap-token] configured RBAC rules to allow the csrapprover controller automatically approve CSRs from a Node Bootstrap Token")
 
 	// Always create this kubeadm-specific binding though
 	return apiclient.CreateOrUpdateClusterRoleBinding(client, &rbac.ClusterRoleBinding{
@@ -87,35 +126,30 @@ func AutoApproveNodeBootstrapTokens(client clientset.Interface, k8sVersion *vers
 		Subjects: []rbac.Subject{
 			{
 				Kind: "Group",
-				Name: constants.GetNodeBootstrapTokenAuthGroup(k8sVersion),
+				Name: constants.NodeBootstrapTokenAuthGroup,
 			},
 		},
 	})
 }
 
 // AutoApproveNodeCertificateRotation creates RBAC rules in a way that makes Node certificate rotation CSR auto-approved by the csrapprover controller
-func AutoApproveNodeCertificateRotation(client clientset.Interface, k8sVersion *version.Version) error {
+func AutoApproveNodeCertificateRotation(client clientset.Interface) error {
+	fmt.Println("[bootstrap-token] configured RBAC rules to allow certificate rotation for all node client certificates in the cluster")
 
-	// Create autorotation cluster role binding only if we deploying or upgrading to version that supports it.
-	if k8sVersion.AtLeast(constants.MinimumCSRAutoApprovalClusterRolesVersion) {
-		fmt.Println("[bootstraptoken] Configured RBAC rules to allow certificate rotation for all node client certificates in the cluster")
-
-		return apiclient.CreateOrUpdateClusterRoleBinding(client, &rbac.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: NodeAutoApproveCertificateRotationClusterRoleBinding,
+	return apiclient.CreateOrUpdateClusterRoleBinding(client, &rbac.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: NodeAutoApproveCertificateRotationClusterRoleBinding,
+		},
+		RoleRef: rbac.RoleRef{
+			APIGroup: rbac.GroupName,
+			Kind:     "ClusterRole",
+			Name:     NodeSelfCSRAutoApprovalClusterRoleName,
+		},
+		Subjects: []rbac.Subject{
+			{
+				Kind: "Group",
+				Name: constants.NodesGroup,
 			},
-			RoleRef: rbac.RoleRef{
-				APIGroup: rbac.GroupName,
-				Kind:     "ClusterRole",
-				Name:     NodeSelfCSRAutoApprovalClusterRoleName,
-			},
-			Subjects: []rbac.Subject{
-				{
-					Kind: "Group",
-					Name: constants.NodesGroup,
-				},
-			},
-		})
-	}
-	return nil
+		},
+	})
 }

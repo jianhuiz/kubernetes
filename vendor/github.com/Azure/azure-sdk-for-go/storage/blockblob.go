@@ -1,5 +1,8 @@
 package storage
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 import (
 	"bytes"
 	"encoding/xml"
@@ -68,6 +71,8 @@ type BlockResponse struct {
 
 // CreateBlockBlob initializes an empty block blob with no blocks.
 //
+// See CreateBlockBlobFromReader for more info on creating blobs.
+//
 // See https://docs.microsoft.com/en-us/rest/api/storageservices/fileservices/Put-Blob
 func (b *Blob) CreateBlockBlob(options *PutBlobOptions) error {
 	return b.CreateBlockBlobFromReader(nil, options)
@@ -77,9 +82,16 @@ func (b *Blob) CreateBlockBlob(options *PutBlobOptions) error {
 // reader. Size must be the number of bytes read from reader. To
 // create an empty blob, use size==0 and reader==nil.
 //
+// Any headers set in blob.Properties or metadata in blob.Metadata
+// will be set on the blob.
+//
 // The API rejects requests with size > 256 MiB (but this limit is not
 // checked by the SDK). To write a larger blob, use CreateBlockBlob,
 // PutBlock, and PutBlockList.
+//
+// To create a blob from scratch, call container.GetBlobReference() to
+// get an empty blob, fill in blob.Properties and blob.Metadata as
+// appropriate then call this method.
 //
 // See https://docs.microsoft.com/en-us/rest/api/storageservices/fileservices/Put-Blob
 func (b *Blob) CreateBlockBlobFromReader(blob io.Reader, options *PutBlobOptions) error {
@@ -91,12 +103,21 @@ func (b *Blob) CreateBlockBlobFromReader(blob io.Reader, options *PutBlobOptions
 	var n int64
 	var err error
 	if blob != nil {
-		buf := &bytes.Buffer{}
-		n, err = io.Copy(buf, blob)
-		if err != nil {
-			return err
+		type lener interface {
+			Len() int
 		}
-		blob = buf
+		// TODO(rjeczalik): handle io.ReadSeeker, in case blob is *os.File etc.
+		if l, ok := blob.(lener); ok {
+			n = int64(l.Len())
+		} else {
+			var buf bytes.Buffer
+			n, err = io.Copy(&buf, blob)
+			if err != nil {
+				return err
+			}
+			blob = &buf
+		}
+
 		headers["Content-Length"] = strconv.FormatInt(n, 10)
 	}
 	b.Properties.ContentLength = n
@@ -114,8 +135,7 @@ func (b *Blob) CreateBlockBlobFromReader(blob io.Reader, options *PutBlobOptions
 	if err != nil {
 		return err
 	}
-	readAndCloseBody(resp.body)
-	return checkRespCode(resp.statusCode, []int{http.StatusCreated})
+	return b.respondCreation(resp, BlobTypeBlock)
 }
 
 // PutBlockOptions includes the options for a put block operation
@@ -163,8 +183,48 @@ func (b *Blob) PutBlockWithLength(blockID string, size uint64, blob io.Reader, o
 	if err != nil {
 		return err
 	}
-	readAndCloseBody(resp.body)
-	return checkRespCode(resp.statusCode, []int{http.StatusCreated})
+	return b.respondCreation(resp, BlobTypeBlock)
+}
+
+// PutBlockFromURLOptions includes the options for a put block from URL operation
+type PutBlockFromURLOptions struct {
+	PutBlockOptions
+
+	SourceContentMD5   string `header:"x-ms-source-content-md5"`
+	SourceContentCRC64 string `header:"x-ms-source-content-crc64"`
+}
+
+// PutBlockFromURL copy data of exactly specified size from specified URL to
+// the block blob with given ID. It is an alternative to PutBlocks where data
+// comes from a remote URL and the offset and length is known in advance.
+//
+// The API rejects requests with size > 100 MiB (but this limit is not
+// checked by the SDK).
+//
+// See https://docs.microsoft.com/en-us/rest/api/storageservices/put-block-from-url
+func (b *Blob) PutBlockFromURL(blockID string, blobURL string, offset int64, size uint64, options *PutBlockFromURLOptions) error {
+	query := url.Values{
+		"comp":    {"block"},
+		"blockid": {blockID},
+	}
+	headers := b.Container.bsc.client.getStandardHeaders()
+	// The value of this header must be set to zero.
+	// When the length is not zero, the operation will fail with the status code 400 (Bad Request).
+	headers["Content-Length"] = "0"
+	headers["x-ms-copy-source"] = blobURL
+	headers["x-ms-source-range"] = fmt.Sprintf("bytes=%d-%d", offset, uint64(offset)+size-1)
+
+	if options != nil {
+		query = addTimeout(query, options.Timeout)
+		headers = mergeHeaders(headers, headersFromStruct(*options))
+	}
+	uri := b.Container.bsc.client.getEndpoint(blobServiceName, b.buildPath(), query)
+
+	resp, err := b.Container.bsc.client.exec(http.MethodPut, uri, headers, nil, b.Container.bsc.auth)
+	if err != nil {
+		return err
+	}
+	return b.respondCreation(resp, BlobTypeBlock)
 }
 
 // PutBlockListOptions includes the options for a put block list operation
@@ -199,8 +259,8 @@ func (b *Blob) PutBlockList(blocks []Block, options *PutBlockListOptions) error 
 	if err != nil {
 		return err
 	}
-	readAndCloseBody(resp.body)
-	return checkRespCode(resp.statusCode, []int{http.StatusCreated})
+	defer drainRespBody(resp)
+	return checkRespCode(resp, []int{http.StatusCreated})
 }
 
 // GetBlockListOptions includes the options for a get block list operation
@@ -233,8 +293,8 @@ func (b *Blob) GetBlockList(blockType BlockListType, options *GetBlockListOption
 	if err != nil {
 		return out, err
 	}
-	defer resp.body.Close()
+	defer resp.Body.Close()
 
-	err = xmlUnmarshal(resp.body, &out)
+	err = xmlUnmarshal(resp.Body, &out)
 	return out, err
 }

@@ -1,5 +1,8 @@
 package storage
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 // QueueServiceClient contains operations for Microsoft Azure Queue Storage
 // Service.
 type QueueServiceClient struct {

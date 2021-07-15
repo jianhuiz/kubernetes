@@ -26,14 +26,21 @@ import (
 	libcontainercgroups "github.com/opencontainers/runc/libcontainer/cgroups"
 
 	"k8s.io/api/core/v1"
-	v1helper "k8s.io/kubernetes/pkg/api/v1/helper"
-	v1qos "k8s.io/kubernetes/pkg/api/v1/helper/qos"
+	"k8s.io/apimachinery/pkg/types"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/kubernetes/pkg/api/v1/resource"
+	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
+	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
+	kubefeatures "k8s.io/kubernetes/pkg/features"
+	"k8s.io/kubernetes/pkg/kubelet/cm/util"
 )
 
 const (
-	// Taken from lmctfy https://github.com/google/lmctfy/blob/master/lmctfy/controllers/cpu_controller.cc
-	MinShares     = 2
+	// These limits are defined in the kernel:
+	// https://github.com/torvalds/linux/blob/0bddd227f3dc55975e2b8dfa7fc6f959b062a2c7/kernel/sched/sched.h#L427-L428
+	MinShares = 2
+	MaxShares = 262144
+
 	SharesPerCPU  = 1024
 	MilliCPUToCPU = 1000
 
@@ -43,28 +50,29 @@ const (
 )
 
 // MilliCPUToQuota converts milliCPU to CFS quota and period values.
-func MilliCPUToQuota(milliCPU int64) (quota int64, period uint64) {
+func MilliCPUToQuota(milliCPU int64, period int64) (quota int64) {
 	// CFS quota is measured in two values:
-	//  - cfs_period_us=100ms (the amount of time to measure usage across)
+	//  - cfs_period_us=100ms (the amount of time to measure usage across given by period)
 	//  - cfs_quota=20ms (the amount of cpu time allowed to be used across a period)
 	// so in the above example, you are limited to 20% of a single CPU
 	// for multi-cpu environments, you just scale equivalent amounts
+	// see https://www.kernel.org/doc/Documentation/scheduler/sched-bwc.txt for details
 
 	if milliCPU == 0 {
 		return
 	}
 
-	// we set the period to 100ms by default
-	period = QuotaPeriod
+	if !utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUCFSQuotaPeriod) {
+		period = QuotaPeriod
+	}
 
 	// we then convert your milliCPU to a value normalized over a period
-	quota = (milliCPU * QuotaPeriod) / MilliCPUToCPU
+	quota = (milliCPU * period) / MilliCPUToCPU
 
 	// quota needs to be a minimum of 1ms.
 	if quota < MinQuotaPeriod {
 		quota = MinQuotaPeriod
 	}
-
 	return
 }
 
@@ -80,6 +88,9 @@ func MilliCPUToShares(milliCPU int64) uint64 {
 	shares := (milliCPU * SharesPerCPU) / MilliCPUToCPU
 	if shares < MinShares {
 		return MinShares
+	}
+	if shares > MaxShares {
+		return MaxShares
 	}
 	return uint64(shares)
 }
@@ -102,7 +113,7 @@ func HugePageLimits(resourceList v1.ResourceList) map[int64]int64 {
 }
 
 // ResourceConfigForPod takes the input pod and outputs the cgroup resource config.
-func ResourceConfigForPod(pod *v1.Pod) *ResourceConfig {
+func ResourceConfigForPod(pod *v1.Pod, enforceCPULimits bool, cpuPeriod uint64, enforceMemoryQoS bool) *ResourceConfig {
 	// sum requests and limits.
 	reqs, limits := resource.PodRequestsAndLimits(pod)
 
@@ -121,7 +132,7 @@ func ResourceConfigForPod(pod *v1.Pod) *ResourceConfig {
 
 	// convert to CFS values
 	cpuShares := MilliCPUToShares(cpuRequests)
-	cpuQuota, cpuPeriod := MilliCPUToQuota(cpuLimits)
+	cpuQuota := MilliCPUToQuota(cpuLimits, int64(cpuPeriod))
 
 	// track if limits were applied for each resource.
 	memoryLimitsDeclared := true
@@ -143,6 +154,11 @@ func ResourceConfigForPod(pod *v1.Pod) *ResourceConfig {
 				hugePageLimits[k] = v
 			}
 		}
+	}
+
+	// quota is not capped when cfs quota is disabled
+	if !enforceCPULimits {
+		cpuQuota = int64(-1)
 	}
 
 	// determine the qos class
@@ -169,11 +185,24 @@ func ResourceConfigForPod(pod *v1.Pod) *ResourceConfig {
 		result.CpuShares = &shares
 	}
 	result.HugePageLimit = hugePageLimits
+
+	if enforceMemoryQoS {
+		memoryMin := int64(0)
+		if request, found := reqs[v1.ResourceMemory]; found {
+			memoryMin = request.Value()
+		}
+		if memoryMin > 0 {
+			result.Unified = map[string]string{
+				MemoryMin: strconv.FormatInt(memoryMin, 10),
+			}
+		}
+	}
+
 	return result
 }
 
-// GetCgroupSubsystems returns information about the mounted cgroup subsystems
-func GetCgroupSubsystems() (*CgroupSubsystems, error) {
+// getCgroupSubsystemsV1 returns information about the mounted cgroup v1 subsystems
+func getCgroupSubsystemsV1() (*CgroupSubsystems, error) {
 	// get all cgroup mounts.
 	allCgroups, err := libcontainercgroups.GetCgroupMounts(true)
 	if err != nil {
@@ -184,14 +213,56 @@ func GetCgroupSubsystems() (*CgroupSubsystems, error) {
 	}
 	mountPoints := make(map[string]string, len(allCgroups))
 	for _, mount := range allCgroups {
+		// BEFORE kubelet used a random mount point per cgroups subsystem;
+		// NOW    more deterministic: kubelet use mount point with shortest path;
+		// FUTURE is bright with clear expectation determined in doc.
+		// ref. issue: https://github.com/kubernetes/kubernetes/issues/95488
+
 		for _, subsystem := range mount.Subsystems {
-			mountPoints[subsystem] = mount.Mountpoint
+			previous := mountPoints[subsystem]
+			if previous == "" || len(mount.Mountpoint) < len(previous) {
+				mountPoints[subsystem] = mount.Mountpoint
+			}
 		}
 	}
 	return &CgroupSubsystems{
 		Mounts:      allCgroups,
 		MountPoints: mountPoints,
 	}, nil
+}
+
+// getCgroupSubsystemsV2 returns information about the enabled cgroup v2 subsystems
+func getCgroupSubsystemsV2() (*CgroupSubsystems, error) {
+	controllers, err := libcontainercgroups.GetAllSubsystems()
+	if err != nil {
+		return nil, err
+	}
+
+	mounts := []libcontainercgroups.Mount{}
+	mountPoints := make(map[string]string, len(controllers))
+	for _, controller := range controllers {
+		mountPoints[controller] = util.CgroupRoot
+		m := libcontainercgroups.Mount{
+			Mountpoint: util.CgroupRoot,
+			Root:       util.CgroupRoot,
+			Subsystems: []string{controller},
+		}
+		mounts = append(mounts, m)
+	}
+
+	return &CgroupSubsystems{
+		Mounts:      mounts,
+		MountPoints: mountPoints,
+	}, nil
+}
+
+// GetCgroupSubsystems returns information about the mounted cgroup subsystems
+func GetCgroupSubsystems() (*CgroupSubsystems, error) {
+	if libcontainercgroups.IsCgroup2UnifiedMode() {
+		return getCgroupSubsystemsV2()
+	}
+
+	return getCgroupSubsystemsV1()
 }
 
 // getCgroupProcs takes a cgroup directory name as an argument
@@ -221,4 +292,45 @@ func getCgroupProcs(dir string) ([]int, error) {
 		}
 	}
 	return out, nil
+}
+
+// GetPodCgroupNameSuffix returns the last element of the pod CgroupName identifier
+func GetPodCgroupNameSuffix(podUID types.UID) string {
+	return podCgroupNamePrefix + string(podUID)
+}
+
+// NodeAllocatableRoot returns the literal cgroup path for the node allocatable cgroup
+func NodeAllocatableRoot(cgroupRoot string, cgroupsPerQOS bool, cgroupDriver string) string {
+	nodeAllocatableRoot := ParseCgroupfsToCgroupName(cgroupRoot)
+	if cgroupsPerQOS {
+		nodeAllocatableRoot = NewCgroupName(nodeAllocatableRoot, defaultNodeAllocatableCgroupName)
+	}
+	if libcontainerCgroupManagerType(cgroupDriver) == libcontainerSystemd {
+		return nodeAllocatableRoot.ToSystemd()
+	}
+	return nodeAllocatableRoot.ToCgroupfs()
+}
+
+// GetKubeletContainer returns the cgroup the kubelet will use
+func GetKubeletContainer(kubeletCgroups string) (string, error) {
+	if kubeletCgroups == "" {
+		cont, err := getContainer(os.Getpid())
+		if err != nil {
+			return "", err
+		}
+		return cont, nil
+	}
+	return kubeletCgroups, nil
+}
+
+// GetRuntimeContainer returns the cgroup used by the container runtime
+func GetRuntimeContainer(containerRuntime, runtimeCgroups string) (string, error) {
+	if containerRuntime == "docker" {
+		cont, err := getContainerNameForProcess(dockerProcessName, dockerPidFile)
+		if err != nil {
+			return "", fmt.Errorf("failed to get container name for docker process: %v", err)
+		}
+		return cont, nil
+	}
+	return runtimeCgroups, nil
 }

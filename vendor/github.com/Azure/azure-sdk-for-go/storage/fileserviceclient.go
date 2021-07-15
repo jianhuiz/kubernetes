@@ -1,5 +1,8 @@
 package storage
 
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License. See License.txt in the project root for license information.
+
 import (
 	"encoding/xml"
 	"fmt"
@@ -140,8 +143,8 @@ func (f FileServiceClient) ListShares(params ListSharesParameters) (*ShareListRe
 	if err != nil {
 		return nil, err
 	}
-	defer resp.body.Close()
-	err = xmlUnmarshal(resp.body, &out)
+	defer resp.Body.Close()
+	err = xmlUnmarshal(resp.Body, &out)
 
 	// assign our client to the newly created Share objects
 	for i := range out.Shares {
@@ -165,7 +168,7 @@ func (f *FileServiceClient) SetServiceProperties(props ServiceProperties) error 
 }
 
 // retrieves directory or share content
-func (f FileServiceClient) listContent(path string, params url.Values, extraHeaders map[string]string) (*storageResponse, error) {
+func (f FileServiceClient) listContent(path string, params url.Values, extraHeaders map[string]string) (*http.Response, error) {
 	if err := f.checkForStorageEmulator(); err != nil {
 		return nil, err
 	}
@@ -179,8 +182,8 @@ func (f FileServiceClient) listContent(path string, params url.Values, extraHead
 		return nil, err
 	}
 
-	if err = checkRespCode(resp.statusCode, []int{http.StatusOK}); err != nil {
-		readAndCloseBody(resp.body)
+	if err = checkRespCode(resp, []int{http.StatusOK}); err != nil {
+		drainRespBody(resp)
 		return nil, err
 	}
 
@@ -198,9 +201,9 @@ func (f FileServiceClient) resourceExists(path string, res resourceType) (bool, 
 
 	resp, err := f.client.exec(http.MethodHead, uri, headers, nil, f.auth)
 	if resp != nil {
-		defer readAndCloseBody(resp.body)
-		if resp.statusCode == http.StatusOK || resp.statusCode == http.StatusNotFound {
-			return resp.statusCode == http.StatusOK, resp.headers, nil
+		defer drainRespBody(resp)
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotFound {
+			return resp.StatusCode == http.StatusOK, resp.Header, nil
 		}
 	}
 	return false, nil, err
@@ -212,12 +215,12 @@ func (f FileServiceClient) createResource(path string, res resourceType, urlPara
 	if err != nil {
 		return nil, err
 	}
-	defer readAndCloseBody(resp.body)
-	return resp.headers, checkRespCode(resp.statusCode, expectedResponseCodes)
+	defer drainRespBody(resp)
+	return resp.Header, checkRespCode(resp, expectedResponseCodes)
 }
 
 // creates a resource depending on the specified resource type, doesn't close the response body
-func (f FileServiceClient) createResourceNoClose(path string, res resourceType, urlParams url.Values, extraHeaders map[string]string) (*storageResponse, error) {
+func (f FileServiceClient) createResourceNoClose(path string, res resourceType, urlParams url.Values, extraHeaders map[string]string) (*http.Response, error) {
 	if err := f.checkForStorageEmulator(); err != nil {
 		return nil, err
 	}
@@ -237,17 +240,17 @@ func (f FileServiceClient) getResourceHeaders(path string, comp compType, res re
 	if err != nil {
 		return nil, err
 	}
-	defer readAndCloseBody(resp.body)
+	defer drainRespBody(resp)
 
-	if err = checkRespCode(resp.statusCode, []int{http.StatusOK}); err != nil {
+	if err = checkRespCode(resp, []int{http.StatusOK}); err != nil {
 		return nil, err
 	}
 
-	return resp.headers, nil
+	return resp.Header, nil
 }
 
 // gets the specified resource, doesn't close the response body
-func (f FileServiceClient) getResourceNoClose(path string, comp compType, res resourceType, params url.Values, verb string, extraHeaders map[string]string) (*storageResponse, error) {
+func (f FileServiceClient) getResourceNoClose(path string, comp compType, res resourceType, params url.Values, verb string, extraHeaders map[string]string) (*http.Response, error) {
 	if err := f.checkForStorageEmulator(); err != nil {
 		return nil, err
 	}
@@ -265,12 +268,12 @@ func (f FileServiceClient) deleteResource(path string, res resourceType, options
 	if err != nil {
 		return err
 	}
-	defer readAndCloseBody(resp.body)
-	return checkRespCode(resp.statusCode, []int{http.StatusAccepted})
+	defer drainRespBody(resp)
+	return checkRespCode(resp, []int{http.StatusAccepted})
 }
 
 // deletes the resource and returns the response, doesn't close the response body
-func (f FileServiceClient) deleteResourceNoClose(path string, res resourceType, options *FileRequestOptions) (*storageResponse, error) {
+func (f FileServiceClient) deleteResourceNoClose(path string, res resourceType, options *FileRequestOptions) (*http.Response, error) {
 	if err := f.checkForStorageEmulator(); err != nil {
 		return nil, err
 	}
@@ -309,9 +312,9 @@ func (f FileServiceClient) setResourceHeaders(path string, comp compType, res re
 	if err != nil {
 		return nil, err
 	}
-	defer readAndCloseBody(resp.body)
+	defer drainRespBody(resp)
 
-	return resp.headers, checkRespCode(resp.statusCode, []int{http.StatusOK})
+	return resp.Header, checkRespCode(resp, []int{http.StatusOK})
 }
 
 //checkForStorageEmulator determines if the client is setup for use with

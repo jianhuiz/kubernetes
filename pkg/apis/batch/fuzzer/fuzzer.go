@@ -18,20 +18,22 @@ package fuzzer
 
 import (
 	fuzz "github.com/google/gofuzz"
-
 	runtimeserializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/kubernetes/pkg/apis/batch"
+	"k8s.io/utils/pointer"
 )
-
-func newBool(val bool) *bool {
-	p := new(bool)
-	*p = val
-	return p
-}
 
 // Funcs returns the fuzzer functions for the batch api group.
 var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 	return []interface{}{
+		func(j *batch.Job, c fuzz.Continue) {
+			c.FuzzNoCustom(j) // fuzz self without calling this function again
+
+			// match defaulting
+			if len(j.Labels) == 0 {
+				j.Labels = j.Spec.Template.Labels
+			}
+		},
 		func(j *batch.JobSpec, c fuzz.Continue) {
 			c.FuzzNoCustom(j) // fuzz self without calling this function again
 			completions := int32(c.Rand.Int31())
@@ -41,10 +43,18 @@ var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 			j.Parallelism = &parallelism
 			j.BackoffLimit = &backoffLimit
 			if c.Rand.Int31()%2 == 0 {
-				j.ManualSelector = newBool(true)
+				j.ManualSelector = pointer.BoolPtr(true)
 			} else {
 				j.ManualSelector = nil
 			}
+			mode := batch.NonIndexedCompletion
+			if c.RandBool() {
+				mode = batch.IndexedCompletion
+			}
+			j.CompletionMode = &mode
+			// We're fuzzing the internal JobSpec type, not the v1 type, so we don't
+			// need to fuzz the nil value.
+			j.Suspend = pointer.BoolPtr(c.RandBool())
 		},
 		func(sj *batch.CronJobSpec, c fuzz.Continue) {
 			c.FuzzNoCustom(sj)

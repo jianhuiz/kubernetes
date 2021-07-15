@@ -20,22 +20,51 @@ package winstats
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
-	"github.com/golang/glog"
 	cadvisorapi "github.com/google/cadvisor/info/v1"
-	"github.com/lxn/win"
+	"golang.org/x/sys/windows"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog/v2"
 )
+
+// MemoryStatusEx is the same as Windows structure MEMORYSTATUSEX
+// https://msdn.microsoft.com/en-us/library/windows/desktop/aa366770(v=vs.85).aspx
+type MemoryStatusEx struct {
+	Length               uint32
+	MemoryLoad           uint32
+	TotalPhys            uint64
+	AvailPhys            uint64
+	TotalPageFile        uint64
+	AvailPageFile        uint64
+	TotalVirtual         uint64
+	AvailVirtual         uint64
+	AvailExtendedVirtual uint64
+}
+
+var (
+	modkernel32                 = windows.NewLazySystemDLL("kernel32.dll")
+	procGlobalMemoryStatusEx    = modkernel32.NewProc("GlobalMemoryStatusEx")
+	procGetActiveProcessorCount = modkernel32.NewProc("GetActiveProcessorCount")
+)
+
+const allProcessorGroups = 0xFFFF
 
 // NewPerfCounterClient creates a client using perf counters
 func NewPerfCounterClient() (Client, error) {
-	return newClient(&perfCounterNodeStatsClient{})
+	// Initialize the cache
+	initCache := cpuUsageCoreNanoSecondsCache{0, 0}
+	return newClient(&perfCounterNodeStatsClient{
+		cpuUsageCoreNanoSecondsCache: initCache,
+	})
 }
 
 // perfCounterNodeStatsClient is a client that provides Windows Stats via PerfCounters
@@ -43,6 +72,8 @@ type perfCounterNodeStatsClient struct {
 	nodeMetrics
 	mu sync.RWMutex // mu protects nodeMetrics
 	nodeInfo
+	// cpuUsageCoreNanoSecondsCache caches the cpu usage for nodes.
+	cpuUsageCoreNanoSecondsCache
 }
 
 func (p *perfCounterNodeStatsClient) startMonitoring() error {
@@ -51,16 +82,14 @@ func (p *perfCounterNodeStatsClient) startMonitoring() error {
 		return err
 	}
 
-	version, err := exec.Command("cmd", "/C", "ver").Output()
+	osInfo, err := GetOSInfo()
 	if err != nil {
 		return err
 	}
 
-	osImageVersion := strings.TrimSpace(string(version))
-	kernelVersion := extractVersionNumber(osImageVersion)
 	p.nodeInfo = nodeInfo{
-		kernelVersion:               kernelVersion,
-		osImageVersion:              osImageVersion,
+		kernelVersion:               osInfo.GetPatchVersion(),
+		osImageVersion:              osInfo.ProductName,
 		memoryPhysicalCapacityBytes: memory,
 		startTime:                   time.Now(),
 	}
@@ -80,9 +109,25 @@ func (p *perfCounterNodeStatsClient) startMonitoring() error {
 		return err
 	}
 
+	networkAdapterCounter, err := newNetworkCounters()
+	if err != nil {
+		return err
+	}
+
 	go wait.Forever(func() {
-		p.collectMetricsData(cpuCounter, memWorkingSetCounter, memCommittedBytesCounter)
+		p.collectMetricsData(cpuCounter, memWorkingSetCounter, memCommittedBytesCounter, networkAdapterCounter)
 	}, perfCounterUpdatePeriod)
+
+	// Cache the CPU usage every defaultCachePeriod
+	go wait.Forever(func() {
+		newValue := p.nodeMetrics.cpuUsageCoreNanoSeconds
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.cpuUsageCoreNanoSecondsCache = cpuUsageCoreNanoSecondsCache{
+			previousValue: p.cpuUsageCoreNanoSecondsCache.latestValue,
+			latestValue:   newValue,
+		}
+	}, defaultCachePeriod)
 
 	return nil
 }
@@ -93,11 +138,37 @@ func (p *perfCounterNodeStatsClient) getMachineInfo() (*cadvisorapi.MachineInfo,
 		return nil, err
 	}
 
+	systemUUID, err := getSystemUUID()
+	if err != nil {
+		return nil, err
+	}
+
 	return &cadvisorapi.MachineInfo{
-		NumCores:       runtime.NumCPU(),
+		NumCores:       processorCount(),
 		MemoryCapacity: p.nodeInfo.memoryPhysicalCapacityBytes,
 		MachineID:      hostname,
+		SystemUUID:     systemUUID,
 	}, nil
+}
+
+// runtime.NumCPU() will only return the information for a single Processor Group.
+// Since a single group can only hold 64 logical processors, this
+// means when there are more they will be divided into multiple groups.
+// For the above reason, procGetActiveProcessorCount is used to get the
+// cpu count for all processor groups of the windows node.
+// more notes for this issue:
+// same issue in moby: https://github.com/moby/moby/issues/38935#issuecomment-744638345
+// solution in hcsshim: https://github.com/microsoft/hcsshim/blob/master/internal/processorinfo/processor_count.go
+func processorCount() int {
+	if amount := getActiveProcessorCount(allProcessorGroups); amount != 0 {
+		return int(amount)
+	}
+	return runtime.NumCPU()
+}
+
+func getActiveProcessorCount(groupNumber uint16) int {
+	r0, _, _ := syscall.Syscall(procGetActiveProcessorCount.Addr(), 1, uintptr(groupNumber), 0, 0)
+	return int(r0)
 }
 
 func (p *perfCounterNodeStatsClient) getVersionInfo() (*cadvisorapi.VersionInfo, error) {
@@ -117,37 +188,45 @@ func (p *perfCounterNodeStatsClient) getNodeInfo() nodeInfo {
 	return p.nodeInfo
 }
 
-func (p *perfCounterNodeStatsClient) collectMetricsData(cpuCounter, memWorkingSetCounter, memCommittedBytesCounter *perfCounter) {
+func (p *perfCounterNodeStatsClient) collectMetricsData(cpuCounter, memWorkingSetCounter, memCommittedBytesCounter *perfCounter, networkAdapterCounter *networkCounter) {
 	cpuValue, err := cpuCounter.getData()
+	cpuCores := runtime.NumCPU()
 	if err != nil {
-		glog.Errorf("Unable to get cpu perf counter data; err: %v", err)
+		klog.ErrorS(err, "Unable to get cpu perf counter data")
 		return
 	}
 
 	memWorkingSetValue, err := memWorkingSetCounter.getData()
 	if err != nil {
-		glog.Errorf("Unable to get memWorkingSet perf counter data; err: %v", err)
+		klog.ErrorS(err, "Unable to get memWorkingSet perf counter data")
 		return
 	}
 
 	memCommittedBytesValue, err := memCommittedBytesCounter.getData()
 	if err != nil {
-		glog.Errorf("Unable to get memCommittedBytes perf counter data; err: %v", err)
+		klog.ErrorS(err, "Unable to get memCommittedBytes perf counter data")
+		return
+	}
+
+	networkAdapterStats, err := networkAdapterCounter.getData()
+	if err != nil {
+		klog.ErrorS(err, "Unable to get network adapter perf counter data")
 		return
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.nodeMetrics = nodeMetrics{
-		cpuUsageCoreNanoSeconds:   p.convertCPUValue(cpuValue),
+		cpuUsageCoreNanoSeconds:   p.convertCPUValue(cpuCores, cpuValue),
+		cpuUsageNanoCores:         p.getCPUUsageNanoCores(),
 		memoryPrivWorkingSetBytes: memWorkingSetValue,
 		memoryCommittedBytes:      memCommittedBytesValue,
+		interfaceStats:            networkAdapterStats,
 		timeStamp:                 time.Now(),
 	}
 }
 
-func (p *perfCounterNodeStatsClient) convertCPUValue(cpuValue uint64) uint64 {
-	cpuCores := runtime.NumCPU()
+func (p *perfCounterNodeStatsClient) convertCPUValue(cpuCores int, cpuValue uint64) uint64 {
 	// This converts perf counter data which is cpu percentage for all cores into nanoseconds.
 	// The formula is (cpuPercentage / 100.0) * #cores * 1e+9 (nano seconds). More info here:
 	// https://github.com/kubernetes/heapster/issues/650
@@ -155,12 +234,43 @@ func (p *perfCounterNodeStatsClient) convertCPUValue(cpuValue uint64) uint64 {
 	return newValue
 }
 
-func getPhysicallyInstalledSystemMemoryBytes() (uint64, error) {
-	var physicalMemoryKiloBytes uint64
+func (p *perfCounterNodeStatsClient) getCPUUsageNanoCores() uint64 {
+	cachePeriodSeconds := uint64(defaultCachePeriod / time.Second)
+	cpuUsageNanoCores := (p.cpuUsageCoreNanoSecondsCache.latestValue - p.cpuUsageCoreNanoSecondsCache.previousValue) / cachePeriodSeconds
+	return cpuUsageNanoCores
+}
 
-	if ok := win.GetPhysicallyInstalledSystemMemory(&physicalMemoryKiloBytes); !ok {
+func getSystemUUID() (string, error) {
+	result, err := exec.Command("wmic", "csproduct", "get", "UUID").Output()
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(string(result))
+	if len(fields) != 2 {
+		return "", fmt.Errorf("received unexpected value retrieving vm uuid: %q", string(result))
+	}
+	return fields[1], nil
+}
+
+func getPhysicallyInstalledSystemMemoryBytes() (uint64, error) {
+	// We use GlobalMemoryStatusEx instead of GetPhysicallyInstalledSystemMemory
+	// on Windows node for the following reasons:
+	// 1. GetPhysicallyInstalledSystemMemory retrieves the amount of physically
+	// installed RAM from the computer's SMBIOS firmware tables.
+	// https://msdn.microsoft.com/en-us/library/windows/desktop/cc300158(v=vs.85).aspx
+	// On some VM, it is unable to read data from SMBIOS and fails with ERROR_INVALID_DATA.
+	// 2. On Linux node, total physical memory is read from MemTotal in /proc/meminfo.
+	// GlobalMemoryStatusEx returns the amount of physical memory that is available
+	// for the operating system to use. The amount returned by GlobalMemoryStatusEx
+	// is closer in parity with Linux
+	// https://www.kernel.org/doc/Documentation/filesystems/proc.txt
+	var statex MemoryStatusEx
+	statex.Length = uint32(unsafe.Sizeof(statex))
+	ret, _, _ := procGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&statex)))
+
+	if ret == 0 {
 		return 0, errors.New("unable to read physical memory")
 	}
 
-	return physicalMemoryKiloBytes * 1024, nil // convert kilobytes to bytes
+	return statex.TotalPhys, nil
 }

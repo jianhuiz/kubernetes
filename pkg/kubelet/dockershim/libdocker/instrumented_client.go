@@ -1,3 +1,5 @@
+// +build !dockerless
+
 /*
 Copyright 2015 The Kubernetes Authors.
 
@@ -32,7 +34,7 @@ type instrumentedInterface struct {
 	client Interface
 }
 
-// Creates an instrumented Interface from an existing Interface.
+// NewInstrumentedInterface creates an instrumented Interface from an existing Interface.
 func NewInstrumentedInterface(dockerClient Interface) Interface {
 	return instrumentedInterface{
 		client: dockerClient,
@@ -42,7 +44,7 @@ func NewInstrumentedInterface(dockerClient Interface) Interface {
 // recordOperation records the duration of the operation.
 func recordOperation(operation string, start time.Time) {
 	metrics.DockerOperations.WithLabelValues(operation).Inc()
-	metrics.DockerOperationsLatency.WithLabelValues(operation).Observe(metrics.SinceInMicroseconds(start))
+	metrics.DockerOperationsLatency.WithLabelValues(operation).Observe(metrics.SinceInSeconds(start))
 }
 
 // recordError records error for metric if an error occurred.

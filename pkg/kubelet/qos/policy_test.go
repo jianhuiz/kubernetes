@@ -20,8 +20,9 @@ import (
 	"strconv"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/kubernetes/pkg/apis/scheduling"
 )
 
 const (
@@ -109,7 +110,7 @@ var (
 				{
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
-							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.Itoa(standardMemoryAmount / 2)),
+							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.FormatInt(standardMemoryAmount/2, 10)),
 							v1.ResourceName(v1.ResourceCPU):    resource.MustParse("5m"),
 						},
 						Limits: v1.ResourceList{
@@ -127,10 +128,38 @@ var (
 				{
 					Resources: v1.ResourceRequirements{
 						Requests: v1.ResourceList{
-							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.Itoa(standardMemoryAmount - 1)),
+							v1.ResourceName(v1.ResourceMemory): resource.MustParse(strconv.FormatInt(standardMemoryAmount-1, 10)),
 							v1.ResourceName(v1.ResourceCPU):    resource.MustParse("5m"),
 						},
 					},
+				},
+			},
+		},
+	}
+
+	systemCritical = scheduling.SystemCriticalPriority
+
+	clusterCritical = v1.Pod{
+		Spec: v1.PodSpec{
+			PriorityClassName: scheduling.SystemClusterCritical,
+			Priority:          &systemCritical,
+			Containers: []v1.Container{
+				{
+					Resources: v1.ResourceRequirements{},
+				},
+			},
+		},
+	}
+
+	systemNodeCritical = scheduling.SystemCriticalPriority + 1000
+
+	nodeCritical = v1.Pod{
+		Spec: v1.PodSpec{
+			PriorityClassName: scheduling.SystemNodeCritical,
+			Priority:          &systemNodeCritical,
+			Containers: []v1.Container{
+				{
+					Resources: v1.ResourceRequirements{},
 				},
 			},
 		},
@@ -173,8 +202,8 @@ func TestGetContainerOOMScoreAdjust(t *testing.T) {
 		{
 			pod:             &equalRequestLimitCPUMemory,
 			memoryCapacity:  123456789,
-			lowOOMScoreAdj:  -998,
-			highOOMScoreAdj: -998,
+			lowOOMScoreAdj:  -997,
+			highOOMScoreAdj: -997,
 		},
 		{
 			pod:             &cpuUnlimitedMemoryLimitedWithRequests,
@@ -185,8 +214,20 @@ func TestGetContainerOOMScoreAdjust(t *testing.T) {
 		{
 			pod:             &requestNoLimit,
 			memoryCapacity:  standardMemoryAmount,
-			lowOOMScoreAdj:  2,
-			highOOMScoreAdj: 2,
+			lowOOMScoreAdj:  3,
+			highOOMScoreAdj: 3,
+		},
+		{
+			pod:             &clusterCritical,
+			memoryCapacity:  4000000000,
+			lowOOMScoreAdj:  1000,
+			highOOMScoreAdj: 1000,
+		},
+		{
+			pod:             &nodeCritical,
+			memoryCapacity:  4000000000,
+			lowOOMScoreAdj:  -997,
+			highOOMScoreAdj: -997,
 		},
 	}
 	for _, test := range oomTests {

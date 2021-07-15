@@ -21,16 +21,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/glog"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume"
-	"k8s.io/kubernetes/pkg/volume/util/volumehelper"
+	"k8s.io/kubernetes/pkg/volume/util"
 )
 
 const TestPluginName = "kubernetes.io/testPlugin"
@@ -58,9 +59,12 @@ func GetTestVolumeSpec(volumeName string, diskName v1.UniqueVolumeName) *volume.
 	}
 }
 
-var extraPods *v1.PodList
-
 func CreateTestClient() *fake.Clientset {
+	var extraPods *v1.PodList
+	var volumeAttachments *storagev1.VolumeAttachmentList
+	var pvs *v1.PersistentVolumeList
+	var nodes *v1.NodeList
+
 	fakeClient := &fake.Clientset{}
 
 	extraPods = &v1.PodList{}
@@ -113,9 +117,7 @@ func CreateTestClient() *fake.Clientset {
 			}
 			obj.Items = append(obj.Items, pod)
 		}
-		for _, pod := range extraPods.Items {
-			obj.Items = append(obj.Items, pod)
-		}
+		obj.Items = append(obj.Items, extraPods.Items...)
 		return true, obj, nil
 	})
 	fakeClient.AddReactor("create", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
@@ -124,8 +126,8 @@ func CreateTestClient() *fake.Clientset {
 		extraPods.Items = append(extraPods.Items, *pod)
 		return true, createAction.GetObject(), nil
 	})
-	fakeClient.AddReactor("list", "nodes", func(action core.Action) (handled bool, ret runtime.Object, err error) {
-		obj := &v1.NodeList{}
+	fakeClient.AddReactor("list", "csinodes", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		obj := &storagev1.CSINodeList{}
 		nodeNamePrefix := "mynode"
 		for i := 0; i < 5; i++ {
 			var nodeName string
@@ -135,29 +137,66 @@ func CreateTestClient() *fake.Clientset {
 				// We want also the "mynode" node since all the testing pods live there
 				nodeName = nodeNamePrefix
 			}
-			node := v1.Node{
+			csiNode := storagev1.CSINode{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: nodeName,
-					Labels: map[string]string{
-						"name": nodeName,
-					},
-					Annotations: map[string]string{
-						volumehelper.ControllerManagedAttachAnnotation: "true",
-					},
 				},
-				Status: v1.NodeStatus{
-					VolumesAttached: []v1.AttachedVolume{
-						{
-							Name:       TestPluginName + "/lostVolumeName",
-							DevicePath: "fake/path",
-						},
-					},
-				},
-				Spec: v1.NodeSpec{ExternalID: string(nodeName)},
 			}
-			obj.Items = append(obj.Items, node)
+			obj.Items = append(obj.Items, csiNode)
 		}
 		return true, obj, nil
+	})
+	nodes = &v1.NodeList{}
+	nodeNamePrefix := "mynode"
+	for i := 0; i < 5; i++ {
+		var nodeName string
+		if i != 0 {
+			nodeName = fmt.Sprintf("%s-%d", nodeNamePrefix, i)
+		} else {
+			// We want also the "mynode" node since all the testing pods live there
+			nodeName = nodeNamePrefix
+		}
+		attachVolumeToNode(nodes, "lostVolumeName", nodeName)
+	}
+	fakeClient.AddReactor("update", "nodes", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		updateAction := action.(core.UpdateAction)
+		node := updateAction.GetObject().(*v1.Node)
+		for index, n := range nodes.Items {
+			if n.Name == node.Name {
+				nodes.Items[index] = *node
+			}
+		}
+		return true, updateAction.GetObject(), nil
+	})
+	fakeClient.AddReactor("list", "nodes", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		obj := &v1.NodeList{}
+		obj.Items = append(obj.Items, nodes.Items...)
+		return true, obj, nil
+	})
+	volumeAttachments = &storagev1.VolumeAttachmentList{}
+	fakeClient.AddReactor("list", "volumeattachments", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		obj := &storagev1.VolumeAttachmentList{}
+		obj.Items = append(obj.Items, volumeAttachments.Items...)
+		return true, obj, nil
+	})
+	fakeClient.AddReactor("create", "volumeattachments", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		createAction := action.(core.CreateAction)
+		va := createAction.GetObject().(*storagev1.VolumeAttachment)
+		volumeAttachments.Items = append(volumeAttachments.Items, *va)
+		return true, createAction.GetObject(), nil
+	})
+
+	pvs = &v1.PersistentVolumeList{}
+	fakeClient.AddReactor("list", "persistentvolumes", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		obj := &v1.PersistentVolumeList{}
+		obj.Items = append(obj.Items, pvs.Items...)
+		return true, obj, nil
+	})
+	fakeClient.AddReactor("create", "persistentvolumes", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		createAction := action.(core.CreateAction)
+		pv := createAction.GetObject().(*v1.PersistentVolume)
+		pvs.Items = append(pvs.Items, *pv)
+		return true, createAction.GetObject(), nil
 	})
 
 	fakeWatch := watch.NewFake()
@@ -177,7 +216,7 @@ func NewPod(uid, name string) *v1.Pod {
 	}
 }
 
-// NewPod returns a test pod object
+// NewPodWithVolume returns a test pod object
 func NewPodWithVolume(podName, volumeName, nodeName string) *v1.Pod {
 	return &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -219,6 +258,88 @@ func NewPodWithVolume(podName, volumeName, nodeName string) *v1.Pod {
 	}
 }
 
+// Returns a volumeAttachment object
+func NewVolumeAttachment(vaName, pvName, nodeName string, status bool) *storagev1.VolumeAttachment {
+	return &storagev1.VolumeAttachment{
+
+		ObjectMeta: metav1.ObjectMeta{
+			UID:  types.UID(vaName),
+			Name: vaName,
+		},
+		Spec: storagev1.VolumeAttachmentSpec{
+			Attacher: "test.storage.gke.io",
+			NodeName: nodeName,
+			Source: storagev1.VolumeAttachmentSource{
+				PersistentVolumeName: &pvName,
+			},
+		},
+		Status: storagev1.VolumeAttachmentStatus{
+			Attached: status,
+		},
+	}
+}
+
+// Returns a persistentVolume object
+func NewPV(pvName, volumeName string) *v1.PersistentVolume {
+	return &v1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:  types.UID(pvName),
+			Name: pvName,
+		},
+		Spec: v1.PersistentVolumeSpec{
+			PersistentVolumeSource: v1.PersistentVolumeSource{
+				GCEPersistentDisk: &v1.GCEPersistentDiskVolumeSource{
+					PDName: volumeName,
+				},
+			},
+		},
+	}
+}
+
+func attachVolumeToNode(nodes *v1.NodeList, volumeName, nodeName string) {
+	// if nodeName exists, get the object.. if not create node object
+	var node *v1.Node
+	found := false
+	nodes.Size()
+	for i := range nodes.Items {
+		curNode := nodes.Items[i]
+		if curNode.ObjectMeta.Name == nodeName {
+			node = &curNode
+			found = true
+			break
+		}
+	}
+	if !found {
+		node = &v1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: nodeName,
+				Labels: map[string]string{
+					"name": nodeName,
+				},
+				Annotations: map[string]string{
+					util.ControllerManagedAttachAnnotation: "true",
+				},
+			},
+			Status: v1.NodeStatus{
+				VolumesAttached: []v1.AttachedVolume{
+					{
+						Name:       v1.UniqueVolumeName(TestPluginName + "/" + volumeName),
+						DevicePath: "fake/path",
+					},
+				},
+			},
+		}
+	} else {
+		volumeAttached := v1.AttachedVolume{
+			Name:       v1.UniqueVolumeName(TestPluginName + "/" + volumeName),
+			DevicePath: "fake/path",
+		}
+		node.Status.VolumesAttached = append(node.Status.VolumesAttached, volumeAttached)
+	}
+
+	nodes.Items = append(nodes.Items, *node)
+}
+
 type TestPlugin struct {
 	ErrorEncountered  bool
 	attachedVolumeMap map[string][]string
@@ -238,23 +359,30 @@ func (plugin *TestPlugin) GetVolumeName(spec *volume.Spec) (string, error) {
 	plugin.pluginLock.Lock()
 	defer plugin.pluginLock.Unlock()
 	if spec == nil {
-		glog.Errorf("GetVolumeName called with nil volume spec")
+		klog.Errorf("GetVolumeName called with nil volume spec")
 		plugin.ErrorEncountered = true
+		return "", fmt.Errorf("GetVolumeName called with nil volume spec")
 	}
-	return spec.Name(), nil
+	if spec.Volume != nil {
+		return spec.Name(), nil
+	} else if spec.PersistentVolume != nil {
+		return spec.PersistentVolume.Spec.PersistentVolumeSource.GCEPersistentDisk.PDName, nil
+	} else {
+		return "", nil
+	}
 }
 
 func (plugin *TestPlugin) CanSupport(spec *volume.Spec) bool {
 	plugin.pluginLock.Lock()
 	defer plugin.pluginLock.Unlock()
 	if spec == nil {
-		glog.Errorf("CanSupport called with nil volume spec")
+		klog.Errorf("CanSupport called with nil volume spec")
 		plugin.ErrorEncountered = true
 	}
 	return true
 }
 
-func (plugin *TestPlugin) RequiresRemount() bool {
+func (plugin *TestPlugin) RequiresRemount(spec *volume.Spec) bool {
 	return false
 }
 
@@ -262,7 +390,7 @@ func (plugin *TestPlugin) NewMounter(spec *volume.Spec, podRef *v1.Pod, opts vol
 	plugin.pluginLock.Lock()
 	defer plugin.pluginLock.Unlock()
 	if spec == nil {
-		glog.Errorf("NewMounter called with nil volume spec")
+		klog.Errorf("NewMounter called with nil volume spec")
 		plugin.ErrorEncountered = true
 	}
 	return nil, nil
@@ -295,12 +423,28 @@ func (plugin *TestPlugin) NewAttacher() (volume.Attacher, error) {
 	return &attacher, nil
 }
 
+func (plugin *TestPlugin) NewDeviceMounter() (volume.DeviceMounter, error) {
+	return plugin.NewAttacher()
+}
+
 func (plugin *TestPlugin) NewDetacher() (volume.Detacher, error) {
 	detacher := testPluginDetacher{
 		detachedVolumeMap: plugin.detachedVolumeMap,
 		pluginLock:        plugin.pluginLock,
 	}
 	return &detacher, nil
+}
+
+func (plugin *TestPlugin) CanAttach(spec *volume.Spec) (bool, error) {
+	return true, nil
+}
+
+func (plugin *TestPlugin) CanDeviceMount(spec *volume.Spec) (bool, error) {
+	return true, nil
+}
+
+func (plugin *TestPlugin) NewDeviceUnmounter() (volume.DeviceUnmounter, error) {
+	return plugin.NewDetacher()
 }
 
 func (plugin *TestPlugin) GetDeviceMountRefs(deviceMountPath string) ([]string, error) {
@@ -366,7 +510,7 @@ func (attacher *testPluginAttacher) Attach(spec *volume.Spec, nodeName types.Nod
 	defer attacher.pluginLock.Unlock()
 	if spec == nil {
 		*attacher.ErrorEncountered = true
-		glog.Errorf("Attach called with nil volume spec")
+		klog.Errorf("Attach called with nil volume spec")
 		return "", fmt.Errorf("Attach called with nil volume spec")
 	}
 	attacher.attachedVolumeMap[string(nodeName)] = append(attacher.attachedVolumeMap[string(nodeName)], spec.Name())
@@ -382,7 +526,7 @@ func (attacher *testPluginAttacher) WaitForAttach(spec *volume.Spec, devicePath 
 	defer attacher.pluginLock.Unlock()
 	if spec == nil {
 		*attacher.ErrorEncountered = true
-		glog.Errorf("WaitForAttach called with nil volume spec")
+		klog.Errorf("WaitForAttach called with nil volume spec")
 		return "", fmt.Errorf("WaitForAttach called with nil volume spec")
 	}
 	fakePath := fmt.Sprintf("%s/%s", devicePath, spec.Name())
@@ -394,18 +538,18 @@ func (attacher *testPluginAttacher) GetDeviceMountPath(spec *volume.Spec) (strin
 	defer attacher.pluginLock.Unlock()
 	if spec == nil {
 		*attacher.ErrorEncountered = true
-		glog.Errorf("GetDeviceMountPath called with nil volume spec")
+		klog.Errorf("GetDeviceMountPath called with nil volume spec")
 		return "", fmt.Errorf("GetDeviceMountPath called with nil volume spec")
 	}
 	return "", nil
 }
 
-func (attacher *testPluginAttacher) MountDevice(spec *volume.Spec, devicePath string, deviceMountPath string) error {
+func (attacher *testPluginAttacher) MountDevice(spec *volume.Spec, devicePath string, deviceMountPath string, _ volume.DeviceMounterArgs) error {
 	attacher.pluginLock.Lock()
 	defer attacher.pluginLock.Unlock()
 	if spec == nil {
 		*attacher.ErrorEncountered = true
-		glog.Errorf("MountDevice called with nil volume spec")
+		klog.Errorf("MountDevice called with nil volume spec")
 		return fmt.Errorf("MountDevice called with nil volume spec")
 	}
 	return nil

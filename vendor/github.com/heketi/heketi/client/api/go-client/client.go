@@ -13,18 +13,48 @@
 package client
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
+	"fmt"
+	"io/ioutil"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 
-	jwt "github.com/dgrijalva/jwt-go"
+	jwt "github.com/form3tech-oss/jwt-go"
 	"github.com/heketi/heketi/pkg/utils"
 )
 
 const (
 	MAX_CONCURRENT_REQUESTS = 32
+	RETRY_COUNT             = 6
+
+	// default delay values
+	MIN_DELAY  = 10
+	MAX_DELAY  = 30
+	POLL_DELAY = 400 // milliseconds
 )
+
+type ClientTLSOptions struct {
+	// directly borrow the field names from crypto/tls
+	InsecureSkipVerify bool
+	// one or more cert file paths (best for self-signed certs)
+	VerifyCerts []string
+}
+
+// Client configuration options
+type ClientOptions struct {
+	RetryEnabled bool
+	RetryCount   int
+	// control waits between retries (seconds)
+	RetryMinDelay, RetryMaxDelay int
+	// control wait time while polling for responses (milliseconds)
+	PollDelay int
+}
 
 // Client object
 type Client struct {
@@ -32,25 +62,103 @@ type Client struct {
 	key      string
 	user     string
 	throttle chan bool
+
+	// configuration for TLS support
+	tlsClientConfig *tls.Config
+
+	// general behavioral options
+	opts ClientOptions
+
+	// allow plugging in custom do wrappers
+	do func(*http.Request) (*http.Response, error)
+
+	// allow plugging in custom http client fetcher
+	getClient ClientFunc
 }
 
-// Creates a new client to access a Heketi server
+var defaultClientOptions = ClientOptions{
+	RetryEnabled:  true,
+	RetryCount:    RETRY_COUNT,
+	RetryMinDelay: MIN_DELAY,
+	RetryMaxDelay: MAX_DELAY,
+	PollDelay:     POLL_DELAY,
+}
+
+// DefaultClientOptions returns a ClientOptions type with all the fields
+// initialized to the default values used internally by the new-client
+// functions.
+func DefaultClientOptions() ClientOptions {
+	return defaultClientOptions
+}
+
+// NewClient creates a new client to access a Heketi server
 func NewClient(host, user, key string) *Client {
+	return NewClientWithOptions(host, user, key, defaultClientOptions)
+}
+
+// NewClientWithOptions creates a new client to access a Heketi server
+// with a user specified suite of options.
+func NewClientWithOptions(host, user, key string, opts ClientOptions) *Client {
 	c := &Client{}
 
 	c.key = key
 	c.host = host
 	c.user = user
-
+	c.opts = opts
 	// Maximum concurrent requests
 	c.throttle = make(chan bool, MAX_CONCURRENT_REQUESTS)
+	if opts.RetryEnabled {
+		c.do = c.retryOperationDo
+	} else {
+		c.do = c.doBasic
+	}
 
 	return c
+}
+
+func NewClientTLS(host, user, key string, tlsOpts *ClientTLSOptions) (*Client, error) {
+	c := NewClient(host, user, key)
+	if err := c.SetTLSOptions(tlsOpts); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // Create a client to access a Heketi server without authentication enabled
 func NewClientNoAuth(host string) *Client {
 	return NewClient(host, "", "")
+}
+
+// SetTLSOptions configures an existing heketi client for
+// TLS support based on the ClientTLSOptions.
+func (c *Client) SetTLSOptions(o *ClientTLSOptions) error {
+	if o == nil {
+		c.tlsClientConfig = nil
+		return nil
+	}
+
+	tlsConfig := &tls.Config{}
+	tlsConfig.InsecureSkipVerify = o.InsecureSkipVerify
+	if len(o.VerifyCerts) > 0 {
+		tlsConfig.RootCAs = x509.NewCertPool()
+		for _, path := range o.VerifyCerts {
+			pem, err := ioutil.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("failed to read cert file %v: %v",
+					path, err)
+			}
+			if ok := tlsConfig.RootCAs.AppendCertsFromPEM(pem); !ok {
+				return fmt.Errorf("failed to load PEM encoded cert from %s",
+					path)
+			}
+		}
+	}
+	c.tlsClientConfig = tlsConfig
+	return nil
+}
+
+func (c *Client) SetClientFunc(f ClientFunc) {
+	c.getClient = f
 }
 
 // Simple Hello test to check if the server is up
@@ -72,6 +180,7 @@ func (c *Client) Hello() error {
 	if err != nil {
 		return err
 	}
+	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
 		return utils.GetErrorFromResponse(r)
 	}
@@ -79,15 +188,22 @@ func (c *Client) Hello() error {
 	return nil
 }
 
+// doBasic performs the core http transaction.
 // Make sure we do not run out of fds by throttling the requests
-func (c *Client) do(req *http.Request) (*http.Response, error) {
+func (c *Client) doBasic(req *http.Request) (*http.Response, error) {
 	c.throttle <- true
 	defer func() {
 		<-c.throttle
 	}()
 
-	httpClient := &http.Client{}
-	httpClient.CheckRedirect = c.checkRedirect
+	getClient := c.getClient
+	if getClient == nil {
+		getClient = HeketiHttpClient
+	}
+	httpClient, err := getClient(c.tlsClientConfig, c.checkRedirect)
+	if err != nil {
+		return nil, err
+	}
 	return httpClient.Do(req)
 }
 
@@ -96,6 +212,11 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 // Here we create a new token before it makes the next request.
 func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 	return c.setToken(req)
+}
+
+func (c *Client) pollResponse(r *http.Response) (*http.Response, error) {
+	return c.waitForResponseWithTimer(
+		r, time.Millisecond*time.Duration(c.opts.PollDelay))
 }
 
 // Wait for the job to finish, waiting waitTime on every loop
@@ -122,7 +243,7 @@ func (c *Client) waitForResponseWithTimer(r *http.Response,
 		}
 
 		// Wait for response
-		r, err = c.do(req)
+		r, err = c.doBasic(req)
 		if err != nil {
 			return nil, err
 		}
@@ -131,6 +252,11 @@ func (c *Client) waitForResponseWithTimer(r *http.Response,
 		if r.Header.Get("X-Pending") == "true" {
 			if r.StatusCode != http.StatusOK {
 				return nil, utils.GetErrorFromResponse(r)
+			}
+			if r != nil {
+				//Read Response Body
+				ioutil.ReadAll(r.Body)
+				r.Body.Close()
 			}
 			time.Sleep(waitTime)
 		} else {
@@ -173,4 +299,94 @@ func (c *Client) setToken(r *http.Request) error {
 	r.Header.Set("Authorization", "bearer "+signedtoken)
 
 	return nil
+}
+
+// retryOperationDo performs the http request and internally
+// handles http 429 codes up to the number of retries specified
+// by the Client.
+func (c *Client) retryOperationDo(req *http.Request) (*http.Response, error) {
+	var (
+		requestBody []byte
+		err         error
+	)
+	if req.Body != nil {
+		requestBody, err = ioutil.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Send request
+	var r *http.Response
+	for i := 0; i <= c.opts.RetryCount; i++ {
+		req.Body = ioutil.NopCloser(bytes.NewReader(requestBody))
+		r, err = c.doBasic(req)
+		if err != nil {
+			return nil, err
+		}
+		switch r.StatusCode {
+		case http.StatusTooManyRequests:
+			if r != nil {
+				//Read Response Body
+				// I don't like discarding error here, but I cant
+				// think of something better atm
+				b, _ := ioutil.ReadAll(r.Body)
+				r.Body.Close()
+				r.Body = ioutil.NopCloser(bytes.NewReader(b))
+			}
+			//sleep before continue
+			time.Sleep(c.opts.retryDelay(r))
+			continue
+
+		default:
+			return r, err
+
+		}
+	}
+	return r, err
+}
+
+// retryDelay returns a duration for which a retry should wait
+// (after failure) before continuing.
+func (c *ClientOptions) retryDelay(r *http.Response) time.Duration {
+	var (
+		min = c.RetryMinDelay
+		max = c.RetryMaxDelay
+	)
+	if ra := r.Header.Get("Retry-After"); ra != "" {
+		// TODO: support http date
+		if i, err := strconv.Atoi(ra); err == nil {
+			s := rand.Intn(min) + i
+			return time.Second * time.Duration(s)
+		}
+	}
+	s := rand.Intn(max-min) + min
+	return time.Second * time.Duration(s)
+}
+
+// CheckRedirectFunc is an alias for the somewhat complex function signature
+// of the CheckRedirect function of the http.Client.
+type CheckRedirectFunc func(*http.Request, []*http.Request) error
+
+// ClientFunc is an alias for the function signature needed to create custom
+// http clients.
+type ClientFunc func(*tls.Config, CheckRedirectFunc) (HttpPerformer, error)
+
+// HttpPerformer is an interface that the heketi api client needs from the http
+// client.
+type HttpPerformer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// HeketiHttpClient constructs a new http client for use by the heketi
+// api client, using the traditional heketi approach.
+func HeketiHttpClient(tlsConfig *tls.Config, checkRedirect CheckRedirectFunc) (HttpPerformer, error) {
+	httpClient := &http.Client{}
+	if tlsConfig != nil {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+	}
+	httpClient.CheckRedirect = checkRedirect
+	return httpClient, nil
 }

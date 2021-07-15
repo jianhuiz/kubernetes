@@ -17,18 +17,16 @@ limitations under the License.
 package test
 
 import (
-	"html/template"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/renstrom/dedent"
-
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
-	"k8s.io/kubernetes/cmd/kubeadm/app/phases/certs/pkiutil"
-	certtestutil "k8s.io/kubernetes/cmd/kubeadm/test/certs"
+	certtestutil "k8s.io/kubernetes/cmd/kubeadm/app/util/certs"
+	configutil "k8s.io/kubernetes/cmd/kubeadm/app/util/config"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
 )
 
 // SetupTempDir is a utility function for kubeadm testing, that creates a temporary directory
@@ -42,40 +40,6 @@ func SetupTempDir(t *testing.T) string {
 	return tmpdir
 }
 
-// SetupMasterConfigurationFile is a utility function for kubeadm testing that writes a master configuration file
-// into /config subfolder of a given temporary directory.
-// The funtion returns the path of the created master configuration file.
-func SetupMasterConfigurationFile(t *testing.T, tmpdir string, cfg *kubeadmapi.MasterConfiguration) string {
-
-	cfgPath := filepath.Join(tmpdir, "config/masterconfig.yaml")
-	if err := os.MkdirAll(filepath.Dir(cfgPath), os.FileMode(0755)); err != nil {
-		t.Fatalf("Couldn't create cfgDir")
-	}
-
-	cfgTemplate := template.Must(template.New("init").Parse(dedent.Dedent(`
-		apiVersion: kubeadm.k8s.io/v1alpha1
-		kind: MasterConfiguration
-		certificatesDir: {{.CertificatesDir}}
-		api:
-		   advertiseAddress: {{.API.AdvertiseAddress}}
-		   bindPort: {{.API.BindPort}}
-		nodeName: {{.NodeName}}
-		`)))
-
-	f, err := os.Create(cfgPath)
-	if err != nil {
-		t.Fatalf("error creating masterconfig file %s: %v", cfgPath, err)
-	}
-
-	err = cfgTemplate.Execute(f, cfg)
-	if err != nil {
-		t.Fatalf("error generating masterconfig file %s: %v", cfgPath, err)
-	}
-	f.Close()
-
-	return cfgPath
-}
-
 // SetupEmptyFiles is a utility function for kubeadm testing that creates one or more empty files (touch)
 func SetupEmptyFiles(t *testing.T, tmpdir string, fileNames ...string) {
 	for _, fileName := range fileNames {
@@ -87,11 +51,11 @@ func SetupEmptyFiles(t *testing.T, tmpdir string, fileNames ...string) {
 	}
 }
 
-// SetupPkiDirWithCertificateAuthorithy is a utility function for kubeadm testing that creates a
-// CertificateAuthorithy cert/key pair into /pki subfolder of a given temporary directory.
-// The funtion returns the path of the created pki.
-func SetupPkiDirWithCertificateAuthorithy(t *testing.T, tmpdir string) string {
-	caCert, caKey := certtestutil.SetupCertificateAuthorithy(t)
+// SetupPkiDirWithCertificateAuthority is a utility function for kubeadm testing that creates a
+// CertificateAuthority cert/key pair into /pki subfolder of a given temporary directory.
+// The function returns the path of the created pki.
+func SetupPkiDirWithCertificateAuthority(t *testing.T, tmpdir string) string {
+	caCert, caKey := certtestutil.SetupCertificateAuthority(t)
 
 	certDir := filepath.Join(tmpdir, "pki")
 	if err := pkiutil.WriteCertAndKey(certDir, kubeadmconstants.CACertAndKeyBaseName, caCert, caKey); err != nil {
@@ -134,4 +98,24 @@ func AssertFileExists(t *testing.T, dirName string, fileNames ...string) {
 			t.Errorf("file %s does not exist", fileName)
 		}
 	}
+}
+
+// AssertError checks that the provided error matches the expected output
+func AssertError(t *testing.T, err error, expected string) {
+	if err == nil {
+		t.Errorf("no error was found, but '%s' was expected", expected)
+		return
+	}
+	if err.Error() != expected {
+		t.Errorf("error '%s' does not match expected error: '%s'", err.Error(), expected)
+	}
+}
+
+// GetDefaultInternalConfig returns a defaulted kubeadmapi.InitConfiguration
+func GetDefaultInternalConfig(t *testing.T) *kubeadmapi.InitConfiguration {
+	internalcfg, err := configutil.DefaultedStaticInitConfiguration()
+	if err != nil {
+		t.Fatalf("unexpected error getting default config: %v", err)
+	}
+	return internalcfg
 }

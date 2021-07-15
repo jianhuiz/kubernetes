@@ -1,3 +1,5 @@
+// +build !providerless
+
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -23,29 +25,36 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
-	"k8s.io/api/core/v1"
-	"k8s.io/kubernetes/pkg/cloudprovider"
-	"k8s.io/kubernetes/pkg/cloudprovider/providers/vsphere"
-	"k8s.io/kubernetes/pkg/cloudprovider/providers/vsphere/vclib"
+	v1 "k8s.io/api/core/v1"
+	cloudprovider "k8s.io/cloud-provider"
+	volumehelpers "k8s.io/cloud-provider/volume/helpers"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
+	"k8s.io/legacy-cloud-providers/vsphere"
+	"k8s.io/legacy-cloud-providers/vsphere/vclib"
 )
 
 const (
-	maxRetries         = 10
 	checkSleepDuration = time.Second
 	diskByIDPath       = "/dev/disk/by-id/"
 	diskSCSIPrefix     = "wwn-0x"
-	diskformat         = "diskformat"
-	datastore          = "datastore"
-	StoragePolicyName  = "storagepolicyname"
+	// diskformat parameter is deprecated as of Kubernetes v1.21.0
+	diskformat        = "diskformat"
+	datastore         = "datastore"
+	StoragePolicyName = "storagepolicyname"
 
-	HostFailuresToTolerateCapability    = "hostfailurestotolerate"
-	ForceProvisioningCapability         = "forceprovisioning"
-	CacheReservationCapability          = "cachereservation"
-	DiskStripesCapability               = "diskstripes"
-	ObjectSpaceReservationCapability    = "objectspacereservation"
+	// hostfailurestotolerate parameter is deprecated as of Kubernetes v1.19.0
+	HostFailuresToTolerateCapability = "hostfailurestotolerate"
+	// forceprovisioning parameter is deprecated as of Kubernetes v1.19.0
+	ForceProvisioningCapability = "forceprovisioning"
+	// cachereservation parameter is deprecated as of Kubernetes v1.19.0
+	CacheReservationCapability = "cachereservation"
+	// diskstripes parameter is deprecated as of Kubernetes v1.19.0
+	DiskStripesCapability = "diskstripes"
+	// objectspacereservation parameter is deprecated as of Kubernetes v1.19.0
+	ObjectSpaceReservationCapability = "objectspacereservation"
+	// iopslimit parameter is deprecated as of Kubernetes v1.19.0
 	IopsLimitCapability                 = "iopslimit"
 	HostFailuresToTolerateCapabilityMin = 0
 	HostFailuresToTolerateCapabilityMax = 3
@@ -58,9 +67,18 @@ const (
 	ObjectSpaceReservationCapabilityMin = 0
 	ObjectSpaceReservationCapabilityMax = 100
 	IopsLimitCapabilityMin              = 0
+	// reduce number of characters in vsphere volume name. The reason for setting length smaller than 255 is because typically
+	// volume name also becomes part of mount path - /var/lib/kubelet/plugins/kubernetes.io/vsphere-volume/mounts/<name>
+	// and systemd has a limit of 256 chars in a unit name - https://github.com/systemd/systemd/pull/14294
+	// so if we subtract the kubelet path prefix from 256, we are left with 191 characters.
+	// Since datastore name is typically part of volumeName we are choosing a shorter length of 63
+	// and leaving room of certain characters being escaped etc.
+	// Given that volume name is typically of the form - pvc-0f13e3ad-97f8-41ab-9392-84562ef40d17.vmdk (45 chars),
+	// this should still leave plenty of room for clusterName inclusion.
+	maxVolumeLength = 63
 )
 
-var ErrProbeVolume = errors.New("Error scanning attached volumes")
+var ErrProbeVolume = errors.New("error scanning attached volumes")
 
 type VsphereDiskUtil struct{}
 
@@ -70,20 +88,11 @@ type VolumeSpec struct {
 	Fstype            string
 	StoragePolicyID   string
 	StoragePolicyName string
-}
-
-func verifyDevicePath(path string) (string, error) {
-	if pathExists, err := volumeutil.PathExists(path); err != nil {
-		return "", fmt.Errorf("Error checking if path exists: %v", err)
-	} else if pathExists {
-		return path, nil
-	}
-
-	return "", nil
+	Labels            map[string]string
 }
 
 // CreateVolume creates a vSphere volume.
-func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volSpec *VolumeSpec, err error) {
+func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner, selectedNode *v1.Node, selectedZone []string) (volSpec *VolumeSpec, err error) {
 	var fstype string
 	cloud, err := getCloudProvider(v.plugin.host.GetCloudProvider())
 	if err != nil {
@@ -91,16 +100,21 @@ func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volSpec 
 	}
 
 	capacity := v.options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
-	volSizeBytes := capacity.Value()
-	// vSphere works with kilobytes, convert to KiB with rounding up
-	volSizeKB := int(volume.RoundUpSize(volSizeBytes, 1024))
-	name := volume.GenerateVolumeName(v.options.ClusterName, v.options.PVName, 255)
+	// vSphere works with KiB, but its minimum allocation unit is 1 MiB
+	volSizeMiB, err := volumehelpers.RoundUpToMiBInt(capacity)
+	if err != nil {
+		return nil, err
+	}
+	volSizeKiB := volSizeMiB * 1024
+	name := volumeutil.GenerateVolumeName(v.options.ClusterName, v.options.PVName, maxVolumeLength)
 	volumeOptions := &vclib.VolumeOptions{
-		CapacityKB: volSizeKB,
+		CapacityKB: volSizeKiB,
 		Tags:       *v.options.CloudTags,
 		Name:       name,
 	}
 
+	volumeOptions.Zone = selectedZone
+	volumeOptions.SelectedNode = selectedNode
 	// Apply Parameters (case-insensitive). We leave validation of
 	// the values to the cloud provider.
 	for parameter, value := range v.options.Parameters {
@@ -111,10 +125,10 @@ func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volSpec 
 			volumeOptions.Datastore = value
 		case volume.VolumeParameterFSType:
 			fstype = value
-			glog.V(4).Infof("Setting fstype as %q", fstype)
+			klog.V(4).Infof("Setting fstype as %q", fstype)
 		case StoragePolicyName:
 			volumeOptions.StoragePolicyName = value
-			glog.V(4).Infof("Setting StoragePolicyName as %q", volumeOptions.StoragePolicyName)
+			klog.V(4).Infof("Setting StoragePolicyName as %q", volumeOptions.StoragePolicyName)
 		case HostFailuresToTolerateCapability, ForceProvisioningCapability,
 			CacheReservationCapability, DiskStripesCapability,
 			ObjectSpaceReservationCapability, IopsLimitCapability:
@@ -130,11 +144,11 @@ func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volSpec 
 
 	if volumeOptions.VSANStorageProfileData != "" {
 		if volumeOptions.StoragePolicyName != "" {
-			return nil, fmt.Errorf("Cannot specify storage policy capabilities along with storage policy name. Please specify only one")
+			return nil, fmt.Errorf("cannot specify storage policy capabilities along with storage policy name. Please specify only one")
 		}
 		volumeOptions.VSANStorageProfileData = "(" + volumeOptions.VSANStorageProfileData + ")"
 	}
-	glog.V(4).Infof("VSANStorageProfileData in vsphere volume %q", volumeOptions.VSANStorageProfileData)
+	klog.V(4).Infof("VSANStorageProfileData in vsphere volume %q", volumeOptions.VSANStorageProfileData)
 	// TODO: implement PVC.Selector parsing
 	if v.options.PVC.Spec.Selector != nil {
 		return nil, fmt.Errorf("claim.Spec.Selector is not supported for dynamic provisioning on vSphere")
@@ -144,14 +158,19 @@ func (util *VsphereDiskUtil) CreateVolume(v *vsphereVolumeProvisioner) (volSpec 
 	if err != nil {
 		return nil, err
 	}
+	labels, err := cloud.GetVolumeLabels(vmDiskPath)
+	if err != nil {
+		return nil, err
+	}
 	volSpec = &VolumeSpec{
 		Path:              vmDiskPath,
-		Size:              volSizeKB,
+		Size:              volSizeKiB,
 		Fstype:            fstype,
 		StoragePolicyName: volumeOptions.StoragePolicyName,
 		StoragePolicyID:   volumeOptions.StoragePolicyID,
+		Labels:            labels,
 	}
-	glog.V(2).Infof("Successfully created vsphere volume %s", name)
+	klog.V(2).Infof("Successfully created vsphere volume %s", name)
 	return volSpec, nil
 }
 
@@ -163,14 +182,14 @@ func (util *VsphereDiskUtil) DeleteVolume(vd *vsphereVolumeDeleter) error {
 	}
 
 	if err = cloud.DeleteVolume(vd.volPath); err != nil {
-		glog.V(2).Infof("Error deleting vsphere volume %s: %v", vd.volPath, err)
+		klog.V(2).Infof("Error deleting vsphere volume %s: %v", vd.volPath, err)
 		return err
 	}
-	glog.V(2).Infof("Successfully deleted vsphere volume %s", vd.volPath)
+	klog.V(2).Infof("Successfully deleted vsphere volume %s", vd.volPath)
 	return nil
 }
 
-func getVolPathfromDeviceMountPath(deviceMountPath string) string {
+func getVolPathfromVolumeName(deviceMountPath string) string {
 	// Assumption: No file or folder is named starting with '[' in datastore
 	volPath := deviceMountPath[strings.LastIndex(deviceMountPath, "["):]
 	// space between datastore and vmdk name in volumePath is encoded as '\040' when returned by GetMountRefs().
@@ -181,13 +200,13 @@ func getVolPathfromDeviceMountPath(deviceMountPath string) string {
 
 func getCloudProvider(cloud cloudprovider.Interface) (*vsphere.VSphere, error) {
 	if cloud == nil {
-		glog.Errorf("Cloud provider not initialized properly")
-		return nil, errors.New("Cloud provider not initialized properly")
+		klog.Errorf("Cloud provider not initialized properly")
+		return nil, errors.New("cloud provider not initialized properly")
 	}
 
-	vs := cloud.(*vsphere.VSphere)
-	if vs == nil {
-		return nil, errors.New("Invalid cloud provider: expected vSphere")
+	vs, ok := cloud.(*vsphere.VSphere)
+	if !ok || vs == nil {
+		return nil, errors.New("invalid cloud provider: expected vSphere")
 	}
 	return vs, nil
 }
@@ -197,55 +216,55 @@ func validateVSANCapability(capabilityName string, capabilityValue string) (stri
 	var capabilityData string
 	capabilityIntVal, ok := verifyCapabilityValueIsInteger(capabilityValue)
 	if !ok {
-		return "", fmt.Errorf("Invalid value for %s. The capabilityValue: %s must be a valid integer value", capabilityName, capabilityValue)
+		return "", fmt.Errorf("invalid value for %s. The capabilityValue: %s must be a valid integer value", capabilityName, capabilityValue)
 	}
 	switch strings.ToLower(capabilityName) {
 	case HostFailuresToTolerateCapability:
 		if capabilityIntVal >= HostFailuresToTolerateCapabilityMin && capabilityIntVal <= HostFailuresToTolerateCapabilityMax {
 			capabilityData = " (\"hostFailuresToTolerate\" i" + capabilityValue + ")"
 		} else {
-			return "", fmt.Errorf(`Invalid value for hostFailuresToTolerate.
-				The default value is %d, minimum value is %d and maximum value is %d.`,
+			return "", fmt.Errorf(`invalid value for hostFailuresToTolerate.
+				The default value is %d, minimum value is %d and maximum value is %d`,
 				1, HostFailuresToTolerateCapabilityMin, HostFailuresToTolerateCapabilityMax)
 		}
 	case ForceProvisioningCapability:
 		if capabilityIntVal >= ForceProvisioningCapabilityMin && capabilityIntVal <= ForceProvisioningCapabilityMax {
 			capabilityData = " (\"forceProvisioning\" i" + capabilityValue + ")"
 		} else {
-			return "", fmt.Errorf(`Invalid value for forceProvisioning.
-				The value can be either %d or %d.`,
+			return "", fmt.Errorf(`invalid value for forceProvisioning.
+				The value can be either %d or %d`,
 				ForceProvisioningCapabilityMin, ForceProvisioningCapabilityMax)
 		}
 	case CacheReservationCapability:
 		if capabilityIntVal >= CacheReservationCapabilityMin && capabilityIntVal <= CacheReservationCapabilityMax {
 			capabilityData = " (\"cacheReservation\" i" + strconv.Itoa(capabilityIntVal*10000) + ")"
 		} else {
-			return "", fmt.Errorf(`Invalid value for cacheReservation.
-				The minimum percentage is %d and maximum percentage is %d.`,
+			return "", fmt.Errorf(`invalid value for cacheReservation.
+				The minimum percentage is %d and maximum percentage is %d`,
 				CacheReservationCapabilityMin, CacheReservationCapabilityMax)
 		}
 	case DiskStripesCapability:
 		if capabilityIntVal >= DiskStripesCapabilityMin && capabilityIntVal <= DiskStripesCapabilityMax {
 			capabilityData = " (\"stripeWidth\" i" + capabilityValue + ")"
 		} else {
-			return "", fmt.Errorf(`Invalid value for diskStripes.
-				The minimum value is %d and maximum value is %d.`,
+			return "", fmt.Errorf(`invalid value for diskStripes.
+				The minimum value is %d and maximum value is %d`,
 				DiskStripesCapabilityMin, DiskStripesCapabilityMax)
 		}
 	case ObjectSpaceReservationCapability:
 		if capabilityIntVal >= ObjectSpaceReservationCapabilityMin && capabilityIntVal <= ObjectSpaceReservationCapabilityMax {
 			capabilityData = " (\"proportionalCapacity\" i" + capabilityValue + ")"
 		} else {
-			return "", fmt.Errorf(`Invalid value for ObjectSpaceReservation.
-				The minimum percentage is %d and maximum percentage is %d.`,
+			return "", fmt.Errorf(`invalid value for ObjectSpaceReservation.
+				The minimum percentage is %d and maximum percentage is %d`,
 				ObjectSpaceReservationCapabilityMin, ObjectSpaceReservationCapabilityMax)
 		}
 	case IopsLimitCapability:
 		if capabilityIntVal >= IopsLimitCapabilityMin {
 			capabilityData = " (\"iopsLimit\" i" + capabilityValue + ")"
 		} else {
-			return "", fmt.Errorf(`Invalid value for iopsLimit.
-				The value should be greater than %d.`, IopsLimitCapabilityMin)
+			return "", fmt.Errorf(`invalid value for iopsLimit.
+				The value should be greater than %d`, IopsLimitCapabilityMin)
 		}
 	}
 	return capabilityData, nil
