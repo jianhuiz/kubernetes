@@ -17,51 +17,88 @@ limitations under the License.
 package initializer
 
 import (
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/component-base/compatibility"
+	"k8s.io/component-base/featuregate"
 )
 
 type pluginInitializer struct {
 	externalClient    kubernetes.Interface
+	dynamicClient     dynamic.Interface
 	externalInformers informers.SharedInformerFactory
 	authorizer        authorizer.Authorizer
-	// serverIdentifyingClientCert used to provide identity when calling out to admission plugins
-	serverIdentifyingClientCert []byte
-	// serverIdentifyingClientKey private key for the client certificate used when calling out to admission plugins
-	serverIdentifyingClientKey []byte
+	featureGates      featuregate.FeatureGate
+	effectiveVersion  compatibility.EffectiveVersion
+	stopCh            <-chan struct{}
+	restMapper        meta.RESTMapper
 }
 
 // New creates an instance of admission plugins initializer.
-// TODO(p0lyn0mial): make the parameters public, this construction seems to be redundant.
-func New(extClientset kubernetes.Interface, extInformers informers.SharedInformerFactory, authz authorizer.Authorizer, serverIdentifyingClientCert, serverIdentifyingClientKey []byte) (pluginInitializer, error) {
+// This constructor is public with a long param list so that callers immediately know that new information can be expected
+// during compilation when they update a level.
+func New(
+	extClientset kubernetes.Interface,
+	dynamicClient dynamic.Interface,
+	extInformers informers.SharedInformerFactory,
+	authz authorizer.Authorizer,
+	featureGates featuregate.FeatureGate,
+	effectiveVersion compatibility.EffectiveVersion,
+	stopCh <-chan struct{},
+	restMapper meta.RESTMapper,
+) pluginInitializer {
 	return pluginInitializer{
-		externalClient:              extClientset,
-		externalInformers:           extInformers,
-		authorizer:                  authz,
-		serverIdentifyingClientCert: serverIdentifyingClientCert,
-		serverIdentifyingClientKey:  serverIdentifyingClientKey,
-	}, nil
+		externalClient:    extClientset,
+		dynamicClient:     dynamicClient,
+		externalInformers: extInformers,
+		authorizer:        authz,
+		featureGates:      featureGates,
+		effectiveVersion:  effectiveVersion,
+		stopCh:            stopCh,
+		restMapper:        restMapper,
+	}
 }
 
 // Initialize checks the initialization interfaces implemented by a plugin
 // and provide the appropriate initialization data
 func (i pluginInitializer) Initialize(plugin admission.Interface) {
+	// First tell the plugin about drained notification, so it can pass it to further initializations.
+	if wants, ok := plugin.(WantsDrainedNotification); ok {
+		wants.SetDrainedNotification(i.stopCh)
+	}
+
+	// Second tell the plugin about enabled features, so it can decide whether to start informers or not
+	if wants, ok := plugin.(WantsEffectiveVersion); ok {
+		wants.InspectEffectiveVersion(i.effectiveVersion)
+	}
+	if wants, ok := plugin.(WantsFeatures); ok {
+		wants.InspectFeatureGates(i.featureGates)
+	}
+
 	if wants, ok := plugin.(WantsExternalKubeClientSet); ok {
 		wants.SetExternalKubeClientSet(i.externalClient)
+	}
+
+	if wants, ok := plugin.(WantsDynamicClient); ok {
+		wants.SetDynamicClient(i.dynamicClient)
 	}
 
 	if wants, ok := plugin.(WantsExternalKubeInformerFactory); ok {
 		wants.SetExternalKubeInformerFactory(i.externalInformers)
 	}
 
+	if wants, ok := plugin.(WantsUnconditionalAuthorizer); ok {
+		wants.SetUnconditionalAuthorizer(i.authorizer)
+	}
 	if wants, ok := plugin.(WantsAuthorizer); ok {
 		wants.SetAuthorizer(i.authorizer)
 	}
-
-	if wants, ok := plugin.(WantsClientCert); ok {
-		wants.SetClientCert(i.serverIdentifyingClientCert, i.serverIdentifyingClientKey)
+	if wants, ok := plugin.(WantsRESTMapper); ok {
+		wants.SetRESTMapper(i.restMapper)
 	}
 }
 

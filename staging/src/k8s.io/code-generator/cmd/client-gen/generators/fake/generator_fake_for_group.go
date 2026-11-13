@@ -19,33 +19,39 @@ package fake
 import (
 	"fmt"
 	"io"
-	"path/filepath"
+	"path"
 	"strings"
 
-	"k8s.io/gengo/generator"
-	"k8s.io/gengo/namer"
-	"k8s.io/gengo/types"
+	"k8s.io/gengo/v2/generator"
+	"k8s.io/gengo/v2/namer"
+	"k8s.io/gengo/v2/types"
 
 	"k8s.io/code-generator/cmd/client-gen/generators/util"
 )
 
 // genFakeForGroup produces a file for a group client, e.g. ExtensionsClient for the extension group.
 type genFakeForGroup struct {
-	generator.DefaultGen
-	outputPackage     string
-	realClientPackage string
-	group             string
+	generator.GoGenerator
+	outputPackage     string // must be a Go import-path
+	realClientPackage string // must be a Go import-path
 	version           string
+	groupGoName       string
 	// types in this group
 	types   []*types.Type
 	imports namer.ImportTracker
+	// If the genGroup has been called. This generator should only execute once.
+	called bool
 }
 
 var _ generator.Generator = &genFakeForGroup{}
 
 // We only want to call GenerateType() once per group.
 func (g *genFakeForGroup) Filter(c *generator.Context, t *types.Type) bool {
-	return len(g.types) == 0 || t == g.types[0]
+	if !g.called {
+		g.called = true
+		return true
+	}
+	return false
 }
 
 func (g *genFakeForGroup) Namers(c *generator.Context) namer.NameSystems {
@@ -55,7 +61,10 @@ func (g *genFakeForGroup) Namers(c *generator.Context) namer.NameSystems {
 }
 
 func (g *genFakeForGroup) Imports(c *generator.Context) (imports []string) {
-	imports = append(g.imports.ImportLines(), strings.ToLower(fmt.Sprintf("%s \"%s\"", filepath.Base(g.realClientPackage), g.realClientPackage)))
+	imports = g.imports.ImportLines()
+	if len(g.types) != 0 {
+		imports = append(imports, fmt.Sprintf("%s \"%s\"", strings.ToLower(path.Base(g.realClientPackage)), g.realClientPackage))
+	}
 	return imports
 }
 
@@ -63,23 +72,26 @@ func (g *genFakeForGroup) GenerateType(c *generator.Context, t *types.Type, w io
 	sw := generator.NewSnippetWriter(w, c, "$", "$")
 
 	m := map[string]interface{}{
-		"group":               g.group,
-		"GroupVersion":        namer.IC(g.group) + namer.IC(g.version),
+		"GroupGoName":         g.groupGoName,
+		"Version":             namer.IC(g.version),
 		"Fake":                c.Universe.Type(types.Name{Package: "k8s.io/client-go/testing", Name: "Fake"}),
 		"RESTClientInterface": c.Universe.Type(types.Name{Package: "k8s.io/client-go/rest", Name: "Interface"}),
 		"RESTClient":          c.Universe.Type(types.Name{Package: "k8s.io/client-go/rest", Name: "RESTClient"}),
+		"FakeClient":          c.Universe.Type(types.Name{Package: "k8s.io/client-go/gentype", Name: "FakeClient"}),
+		"NewFakeClient":       c.Universe.Function(types.Name{Package: "k8s.io/client-go/gentype", Name: "NewFakeClient"}),
 	}
 
 	sw.Do(groupClientTemplate, m)
 	for _, t := range g.types {
-		tags, err := util.ParseClientGenTags(t.SecondClosestCommentLines)
+		tags, err := util.ParseClientGenTags(append(t.SecondClosestCommentLines, t.CommentLines...))
 		if err != nil {
 			return err
 		}
 		wrapper := map[string]interface{}{
 			"type":              t,
-			"GroupVersion":      namer.IC(g.group) + namer.IC(g.version),
-			"realClientPackage": strings.ToLower(filepath.Base(g.realClientPackage)),
+			"GroupGoName":       g.groupGoName,
+			"Version":           namer.IC(g.version),
+			"realClientPackage": strings.ToLower(path.Base(g.realClientPackage)),
 		}
 		if tags.NonNamespaced {
 			sw.Do(getterImplNonNamespaced, wrapper)
@@ -92,27 +104,27 @@ func (g *genFakeForGroup) GenerateType(c *generator.Context, t *types.Type, w io
 }
 
 var groupClientTemplate = `
-type Fake$.GroupVersion$ struct {
+type Fake$.GroupGoName$$.Version$ struct {
 	*$.Fake|raw$
 }
 `
 
 var getterImplNamespaced = `
-func (c *Fake$.GroupVersion$) $.type|publicPlural$(namespace string) $.realClientPackage$.$.type|public$Interface {
-	return &Fake$.type|publicPlural${c, namespace}
+func (c *Fake$.GroupGoName$$.Version$) $.type|publicPlural$(namespace string) $.realClientPackage$.$.type|public$Interface {
+	return newFake$.type|publicPlural$(c, namespace)
 }
 `
 
 var getterImplNonNamespaced = `
-func (c *Fake$.GroupVersion$) $.type|publicPlural$() $.realClientPackage$.$.type|public$Interface {
-	return &Fake$.type|publicPlural${c}
+func (c *Fake$.GroupGoName$$.Version$) $.type|publicPlural$() $.realClientPackage$.$.type|public$Interface {
+	return newFake$.type|publicPlural$(c)
 }
 `
 
 var getRESTClient = `
 // RESTClient returns a RESTClient that is used to communicate
 // with API server by this client implementation.
-func (c *Fake$.GroupVersion$) RESTClient() $.RESTClientInterface|raw$ {
+func (c *Fake$.GroupGoName$$.Version$) RESTClient() $.RESTClientInterface|raw$ {
 	var ret *$.RESTClient|raw$
 	return ret
 }

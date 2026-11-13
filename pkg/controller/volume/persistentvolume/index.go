@@ -20,23 +20,23 @@ import (
 	"fmt"
 	"sort"
 
-	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/tools/cache"
-	v1helper "k8s.io/kubernetes/pkg/api/v1/helper"
-	"k8s.io/kubernetes/pkg/volume"
+	v1 "k8s.io/api/core/v1"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/component-helpers/storage/volume"
+	"k8s.io/component-helpers/storage/volume/assumecache"
+	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
+	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/kubernetes/pkg/volume/util"
 )
 
-// persistentVolumeOrderedIndex is a cache.Store that keeps persistent volumes
-// indexed by AccessModes and ordered by storage capacity.
-type persistentVolumeOrderedIndex struct {
-	store cache.Indexer
-}
+const accessModesIndex = "accessmodes"
 
-func newPersistentVolumeOrderedIndex() persistentVolumeOrderedIndex {
-	return persistentVolumeOrderedIndex{cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{"accessmodes": accessModesIndexFunc})}
+// persistentVolumeOrderedIndex keeps persistent volumes indexed by AccessModes
+// and ordered by storage capacity. It is backed by an assume cache layered on
+// top of the PV shared informer, so lookups observe the controller's own writes
+// before the informer delivers them.
+type persistentVolumeOrderedIndex struct {
+	*assumecache.AssumeCache[*v1.PersistentVolume]
 }
 
 // accessModesIndexFunc is an indexing function that returns a persistent
@@ -52,27 +52,11 @@ func accessModesIndexFunc(obj interface{}) ([]string, error) {
 // listByAccessModes returns all volumes with the given set of
 // AccessModeTypes. The list is unsorted!
 func (pvIndex *persistentVolumeOrderedIndex) listByAccessModes(modes []v1.PersistentVolumeAccessMode) ([]*v1.PersistentVolume, error) {
-	pv := &v1.PersistentVolume{
-		Spec: v1.PersistentVolumeSpec{
-			AccessModes: modes,
-		},
-	}
-
-	objs, err := pvIndex.store.Index("accessmodes", pv)
-	if err != nil {
-		return nil, err
-	}
-
-	volumes := make([]*v1.PersistentVolume, len(objs))
-	for i, obj := range objs {
-		volumes[i] = obj.(*v1.PersistentVolume)
-	}
-
-	return volumes, nil
+	return pvIndex.ByIndex(accessModesIndex, v1helper.GetAccessModesAsString(modes))
 }
 
 // find returns the nearest PV from the ordered list or nil if a match is not found
-func (pvIndex *persistentVolumeOrderedIndex) findByClaim(claim *v1.PersistentVolumeClaim) (*v1.PersistentVolume, error) {
+func (pvIndex *persistentVolumeOrderedIndex) findByClaim(claim *v1.PersistentVolumeClaim, delayBinding bool) (*v1.PersistentVolume, error) {
 	// PVs are indexed by their access modes to allow easier searching.  Each
 	// index is the string representation of a set of access modes. There is a
 	// finite number of possible sets and PVs will only be indexed in one of
@@ -88,78 +72,27 @@ func (pvIndex *persistentVolumeOrderedIndex) findByClaim(claim *v1.PersistentVol
 	// example above).
 	allPossibleModes := pvIndex.allPossibleMatchingAccessModes(claim.Spec.AccessModes)
 
-	var smallestVolume *v1.PersistentVolume
-	var smallestVolumeQty resource.Quantity
-	requestedQty := claim.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
-	requestedClass := v1helper.GetPersistentVolumeClaimClass(claim)
-
-	var selector labels.Selector
-	if claim.Spec.Selector != nil {
-		internalSelector, err := metav1.LabelSelectorAsSelector(claim.Spec.Selector)
-		if err != nil {
-			// should be unreachable code due to validation
-			return nil, fmt.Errorf("error creating internal label selector for claim: %v: %v", claimToClaimKey(claim), err)
-		}
-		selector = internalSelector
-	}
-
 	for _, modes := range allPossibleModes {
 		volumes, err := pvIndex.listByAccessModes(modes)
 		if err != nil {
 			return nil, err
 		}
 
-		// Go through all available volumes with two goals:
-		// - find a volume that is either pre-bound by user or dynamically
-		//   provisioned for this claim. Because of this we need to loop through
-		//   all volumes.
-		// - find the smallest matching one if there is no volume pre-bound to
-		//   the claim.
-		for _, volume := range volumes {
-			if isVolumeBoundToClaim(volume, claim) {
-				// this claim and volume are pre-bound; return
-				// the volume if the size request is satisfied,
-				// otherwise continue searching for a match
-				volumeQty := volume.Spec.Capacity[v1.ResourceStorage]
-				if volumeQty.Cmp(requestedQty) < 0 {
-					continue
-				}
-				return volume, nil
-			}
-
-			// filter out:
-			// - volumes bound to another claim
-			// - volumes whose labels don't match the claim's selector, if specified
-			// - volumes in Class that is not requested
-			if volume.Spec.ClaimRef != nil {
-				continue
-			} else if selector != nil && !selector.Matches(labels.Set(volume.Labels)) {
-				continue
-			}
-			if v1helper.GetPersistentVolumeClass(volume) != requestedClass {
-				continue
-			}
-
-			volumeQty := volume.Spec.Capacity[v1.ResourceStorage]
-			if volumeQty.Cmp(requestedQty) >= 0 {
-				if smallestVolume == nil || smallestVolumeQty.Cmp(volumeQty) > 0 {
-					smallestVolume = volume
-					smallestVolumeQty = volumeQty
-				}
-			}
+		bestVol, err := volume.FindMatchingVolume(claim, volumes, nil /* node for topology binding*/, nil /* exclusion map */, delayBinding, utilfeature.DefaultFeatureGate.Enabled(features.VolumeAttributesClass))
+		if err != nil {
+			return nil, err
 		}
 
-		if smallestVolume != nil {
-			// Found a matching volume
-			return smallestVolume, nil
+		if bestVol != nil {
+			return bestVol, nil
 		}
 	}
 	return nil, nil
 }
 
 // findBestMatchForClaim is a convenience method that finds a volume by the claim's AccessModes and requests for Storage
-func (pvIndex *persistentVolumeOrderedIndex) findBestMatchForClaim(claim *v1.PersistentVolumeClaim) (*v1.PersistentVolume, error) {
-	return pvIndex.findByClaim(claim)
+func (pvIndex *persistentVolumeOrderedIndex) findBestMatchForClaim(claim *v1.PersistentVolumeClaim, delayBinding bool) (*v1.PersistentVolume, error) {
+	return pvIndex.findByClaim(claim, delayBinding)
 }
 
 // allPossibleMatchingAccessModes returns an array of AccessMode arrays that
@@ -180,32 +113,32 @@ func (pvIndex *persistentVolumeOrderedIndex) findBestMatchForClaim(claim *v1.Per
 // A request for RWO could be satisfied by both sets of indexed volumes, so
 // allPossibleMatchingAccessModes returns:
 //
-// [][]v1.PersistentVolumeAccessMode {
-//      []v1.PersistentVolumeAccessMode {
-//			v1.ReadWriteOnce, v1.ReadOnlyMany,
-//		},
-//      []v1.PersistentVolumeAccessMode {
-//			v1.ReadWriteOnce, v1.ReadOnlyMany, v1.ReadWriteMany,
-//		},
-// }
+//	[][]v1.PersistentVolumeAccessMode {
+//	     []v1.PersistentVolumeAccessMode {
+//				v1.ReadWriteOnce, v1.ReadOnlyMany,
+//			},
+//	     []v1.PersistentVolumeAccessMode {
+//				v1.ReadWriteOnce, v1.ReadOnlyMany, v1.ReadWriteMany,
+//			},
+//	}
 //
 // A request for RWX can be satisfied by only one set of indexed volumes, so
 // the return is:
 //
-// [][]v1.PersistentVolumeAccessMode {
-//      []v1.PersistentVolumeAccessMode {
-//			v1.ReadWriteOnce, v1.ReadOnlyMany, v1.ReadWriteMany,
-//		},
-// }
+//	[][]v1.PersistentVolumeAccessMode {
+//	     []v1.PersistentVolumeAccessMode {
+//				v1.ReadWriteOnce, v1.ReadOnlyMany, v1.ReadWriteMany,
+//			},
+//	}
 //
 // This func returns modes with ascending levels of modes to give the user
 // what is closest to what they actually asked for.
 func (pvIndex *persistentVolumeOrderedIndex) allPossibleMatchingAccessModes(requestedModes []v1.PersistentVolumeAccessMode) [][]v1.PersistentVolumeAccessMode {
 	matchedModes := [][]v1.PersistentVolumeAccessMode{}
-	keys := pvIndex.store.ListIndexFuncValues("accessmodes")
+	keys := pvIndex.ListIndexFuncValues(accessModesIndex)
 	for _, key := range keys {
 		indexedModes := v1helper.GetAccessModesFromString(key)
-		if volume.AccessModesContainedInAll(indexedModes, requestedModes) {
+		if util.ContainsAllAccessModes(indexedModes, requestedModes) {
 			matchedModes = append(matchedModes, indexedModes)
 		}
 	}

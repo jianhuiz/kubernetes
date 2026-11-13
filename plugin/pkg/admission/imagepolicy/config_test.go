@@ -89,13 +89,41 @@ func TestConfigNormalization(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			test: "config within normal ranges for min values",
+			config: imagePolicyWebhookConfig{
+				AllowTTL:     minAllowTTL / time.Second,
+				DenyTTL:      minDenyTTL / time.Second,
+				RetryBackoff: minRetryBackoff,
+			},
+			normalizedConfig: imagePolicyWebhookConfig{
+				AllowTTL:     minAllowTTL,
+				DenyTTL:      minDenyTTL,
+				RetryBackoff: minRetryBackoff * time.Millisecond,
+			},
+			wantErr: false,
+		},
+		{
+			test: "config within normal ranges for max values",
+			config: imagePolicyWebhookConfig{
+				AllowTTL:     maxAllowTTL / time.Second,
+				DenyTTL:      maxDenyTTL / time.Second,
+				RetryBackoff: maxRetryBackoff / time.Millisecond,
+			},
+			normalizedConfig: imagePolicyWebhookConfig{
+				AllowTTL:     maxAllowTTL,
+				DenyTTL:      maxDenyTTL,
+				RetryBackoff: maxRetryBackoff,
+			},
+			wantErr: false,
+		},
 	}
 	for _, tt := range tests {
 		err := normalizeWebhookConfig(&tt.config)
-		if err == nil && tt.wantErr == true {
+		if err == nil && tt.wantErr {
 			t.Errorf("%s: expected error from normalization and didn't have one", tt.test)
 		}
-		if err != nil && tt.wantErr == false {
+		if err != nil && !tt.wantErr {
 			t.Errorf("%s: unexpected error from normalization: %v", tt.test, err)
 		}
 		if err == nil && !reflect.DeepEqual(tt.config, tt.normalizedConfig) {

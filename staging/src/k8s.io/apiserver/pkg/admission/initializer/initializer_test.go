@@ -17,9 +17,12 @@ limitations under the License.
 package initializer_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/admission/initializer"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
@@ -28,13 +31,21 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+// TestWantsUnconditionalAuthorizer ensures that the authorizer is injected
+// when the WantsUnconditionalAuthorizer interface is implemented by a plugin.
+func TestWantsUnconditionalAuthorizer(t *testing.T) {
+	target := initializer.New(nil, nil, nil, &TestAuthorizer{}, nil, nil, nil, nil)
+	wantUnconditionalAuthorizerAdmission := &WantUnconditionalAuthorizerAdmission{}
+	target.Initialize(wantUnconditionalAuthorizerAdmission)
+	if wantUnconditionalAuthorizerAdmission.auth == nil {
+		t.Errorf("expected unconditional authorizer to be initialized but found nil")
+	}
+}
+
 // TestWantsAuthorizer ensures that the authorizer is injected
 // when the WantsAuthorizer interface is implemented by a plugin.
 func TestWantsAuthorizer(t *testing.T) {
-	target, err := initializer.New(nil, nil, &TestAuthorizer{}, nil, nil)
-	if err != nil {
-		t.Fatalf("expected to create an instance of initializer but got an error = %s", err.Error())
-	}
+	target := initializer.New(nil, nil, nil, &TestAuthorizer{}, nil, nil, nil, nil)
 	wantAuthorizerAdmission := &WantAuthorizerAdmission{}
 	target.Initialize(wantAuthorizerAdmission)
 	if wantAuthorizerAdmission.auth == nil {
@@ -42,14 +53,11 @@ func TestWantsAuthorizer(t *testing.T) {
 	}
 }
 
-// TestWantsExternalKubeClientSet ensures that the clienset is injected
+// TestWantsExternalKubeClientSet ensures that the clientset is injected
 // when the WantsExternalKubeClientSet interface is implemented by a plugin.
 func TestWantsExternalKubeClientSet(t *testing.T) {
 	cs := &fake.Clientset{}
-	target, err := initializer.New(cs, nil, &TestAuthorizer{}, nil, nil)
-	if err != nil {
-		t.Fatalf("expected to create an instance of initializer but got an error = %s", err.Error())
-	}
+	target := initializer.New(cs, nil, nil, &TestAuthorizer{}, nil, nil, nil, nil)
 	wantExternalKubeClientSet := &WantExternalKubeClientSet{}
 	target.Initialize(wantExternalKubeClientSet)
 	if wantExternalKubeClientSet.cs != cs {
@@ -62,10 +70,7 @@ func TestWantsExternalKubeClientSet(t *testing.T) {
 func TestWantsExternalKubeInformerFactory(t *testing.T) {
 	cs := &fake.Clientset{}
 	sf := informers.NewSharedInformerFactory(cs, time.Duration(1)*time.Second)
-	target, err := initializer.New(cs, sf, &TestAuthorizer{}, nil, nil)
-	if err != nil {
-		t.Fatalf("expected to create an instance of initializer but got an error = %s", err.Error())
-	}
+	target := initializer.New(cs, nil, sf, &TestAuthorizer{}, nil, nil, nil, nil)
 	wantExternalKubeInformerFactory := &WantExternalKubeInformerFactory{}
 	target.Initialize(wantExternalKubeInformerFactory)
 	if wantExternalKubeInformerFactory.sf != sf {
@@ -73,17 +78,15 @@ func TestWantsExternalKubeInformerFactory(t *testing.T) {
 	}
 }
 
-// TestWantsClientCert ensures that the client certificate and key are injected
-// when the WantsClientCert interface is implemented by a plugin.
-func TestWantsClientCert(t *testing.T) {
-	target, err := initializer.New(nil, nil, nil, []byte("cert"), []byte("key"))
-	if err != nil {
-		t.Fatalf("expected to create an instance of initializer but got an error = %s", err.Error())
-	}
-	wantClientCert := &clientCertWanter{}
-	target.Initialize(wantClientCert)
-	if string(wantClientCert.gotCert) != "cert" || string(wantClientCert.gotKey) != "key" {
-		t.Errorf("expected client cert to be initialized, clientCert = %v, clientKey = %v", wantClientCert.gotCert, wantClientCert.gotKey)
+// TestWantsShutdownSignal ensures that the shutdown signal is injected
+// when the WantsShutdownSignal interface is implemented by a plugin.
+func TestWantsShutdownNotification(t *testing.T) {
+	stopCh := make(chan struct{})
+	target := initializer.New(nil, nil, nil, &TestAuthorizer{}, nil, nil, stopCh, nil)
+	wantDrainedNotification := &WantDrainedNotification{}
+	target.Initialize(wantDrainedNotification)
+	if wantDrainedNotification.stopCh == nil {
+		t.Errorf("expected stopCh to be initialized but found nil")
 	}
 }
 
@@ -95,9 +98,11 @@ type WantExternalKubeInformerFactory struct {
 func (self *WantExternalKubeInformerFactory) SetExternalKubeInformerFactory(sf informers.SharedInformerFactory) {
 	self.sf = sf
 }
-func (self *WantExternalKubeInformerFactory) Admit(a admission.Attributes) error { return nil }
+func (self *WantExternalKubeInformerFactory) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
+	return nil
+}
 func (self *WantExternalKubeInformerFactory) Handles(o admission.Operation) bool { return false }
-func (self *WantExternalKubeInformerFactory) Validate() error                    { return nil }
+func (self *WantExternalKubeInformerFactory) ValidateInitialization() error      { return nil }
 
 var _ admission.Interface = &WantExternalKubeInformerFactory{}
 var _ initializer.WantsExternalKubeInformerFactory = &WantExternalKubeInformerFactory{}
@@ -107,40 +112,138 @@ type WantExternalKubeClientSet struct {
 	cs kubernetes.Interface
 }
 
-func (self *WantExternalKubeClientSet) SetExternalKubeClientSet(cs kubernetes.Interface) { self.cs = cs }
-func (self *WantExternalKubeClientSet) Admit(a admission.Attributes) error               { return nil }
-func (self *WantExternalKubeClientSet) Handles(o admission.Operation) bool               { return false }
-func (self *WantExternalKubeClientSet) Validate() error                                  { return nil }
+func (self *WantExternalKubeClientSet) SetExternalKubeClientSet(cs kubernetes.Interface) {
+	self.cs = cs
+}
+func (self *WantExternalKubeClientSet) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
+	return nil
+}
+func (self *WantExternalKubeClientSet) Handles(o admission.Operation) bool { return false }
+func (self *WantExternalKubeClientSet) ValidateInitialization() error      { return nil }
 
 var _ admission.Interface = &WantExternalKubeClientSet{}
 var _ initializer.WantsExternalKubeClientSet = &WantExternalKubeClientSet{}
+
+// WantUnconditionalAuthorizerAdmission is a test stub that fulfills the WantsUnconditionalAuthorizer interface.
+type WantUnconditionalAuthorizerAdmission struct {
+	auth authorizer.UnconditionalAuthorizer
+}
+
+func (self *WantUnconditionalAuthorizerAdmission) SetUnconditionalAuthorizer(a authorizer.UnconditionalAuthorizer) {
+	self.auth = a
+}
+func (self *WantUnconditionalAuthorizerAdmission) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
+	return nil
+}
+func (self *WantUnconditionalAuthorizerAdmission) Handles(o admission.Operation) bool { return false }
+func (self *WantUnconditionalAuthorizerAdmission) ValidateInitialization() error      { return nil }
+
+var _ admission.Interface = &WantUnconditionalAuthorizerAdmission{}
+var _ initializer.WantsUnconditionalAuthorizer = &WantUnconditionalAuthorizerAdmission{}
 
 // WantAuthorizerAdmission is a test stub that fulfills the WantsAuthorizer interface.
 type WantAuthorizerAdmission struct {
 	auth authorizer.Authorizer
 }
 
-func (self *WantAuthorizerAdmission) SetAuthorizer(a authorizer.Authorizer) { self.auth = a }
-func (self *WantAuthorizerAdmission) Admit(a admission.Attributes) error    { return nil }
-func (self *WantAuthorizerAdmission) Handles(o admission.Operation) bool    { return false }
-func (self *WantAuthorizerAdmission) Validate() error                       { return nil }
+func (self *WantAuthorizerAdmission) SetAuthorizer(a authorizer.Authorizer) {
+	self.auth = a
+}
+func (self *WantAuthorizerAdmission) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
+	return nil
+}
+func (self *WantAuthorizerAdmission) Handles(o admission.Operation) bool { return false }
+func (self *WantAuthorizerAdmission) ValidateInitialization() error      { return nil }
 
 var _ admission.Interface = &WantAuthorizerAdmission{}
 var _ initializer.WantsAuthorizer = &WantAuthorizerAdmission{}
 
-// TestAuthorizer is a test stub that fulfills the WantsAuthorizer interface.
+// WantDrainedNotification is a test stub that filfills the WantsDrainedNotification interface.
+type WantDrainedNotification struct {
+	stopCh <-chan struct{}
+}
+
+func (self *WantDrainedNotification) SetDrainedNotification(stopCh <-chan struct{}) {
+	self.stopCh = stopCh
+}
+func (self *WantDrainedNotification) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
+	return nil
+}
+func (self *WantDrainedNotification) Handles(o admission.Operation) bool { return false }
+func (self *WantDrainedNotification) ValidateInitialization() error      { return nil }
+
+var _ admission.Interface = &WantDrainedNotification{}
+var _ initializer.WantsDrainedNotification = &WantDrainedNotification{}
+
+// TestAuthorizer is a test stub that fulfills the full Authorizer interface.
 type TestAuthorizer struct{}
 
-func (t *TestAuthorizer) Authorize(a authorizer.Attributes) (authorized bool, reason string, err error) {
-	return false, "", nil
+func (t *TestAuthorizer) Authorize(ctx context.Context, a authorizer.Attributes) (authorized authorizer.Decision, reason string, err error) {
+	return authorizer.DecisionNoOpinion, "", nil
 }
 
-// wantClientCert is a test stub for testing that fulfulls the WantsClientCert interface.
-type clientCertWanter struct {
-	gotCert, gotKey []byte
+// ConditionsAwareAuthorize is not conditions-aware, converts the Authorize decision.
+func (t *TestAuthorizer) ConditionsAwareAuthorize(ctx context.Context, a authorizer.Attributes) authorizer.ConditionsAwareDecision {
+	return authorizer.ConditionsAwareDecisionFromParts(t.Authorize(ctx, a))
 }
 
-func (s *clientCertWanter) SetClientCert(cert, key []byte)     { s.gotCert, s.gotKey = cert, key }
-func (s *clientCertWanter) Admit(a admission.Attributes) error { return nil }
-func (s *clientCertWanter) Handles(o admission.Operation) bool { return false }
-func (s *clientCertWanter) Validate() error                    { return nil }
+// EvaluateConditions is not supported by this authorizer.
+func (*TestAuthorizer) EvaluateConditions(_ context.Context, _ authorizer.ConditionsAwareDecision, _ authorizer.ConditionsData) (authorizer.Decision, string, error) {
+	return authorizer.DecisionDeny, "", authorizer.ErrorConditionEvaluationNotSupported
+}
+
+func TestRESTMapperAdmissionPlugin(t *testing.T) {
+	initializer := initializer.New(nil, nil, nil, &TestAuthorizer{}, nil, nil, nil, &doNothingRESTMapper{})
+	wantsRESTMapperAdmission := &WantsRESTMapperAdmissionPlugin{}
+	initializer.Initialize(wantsRESTMapperAdmission)
+
+	if wantsRESTMapperAdmission.mapper == nil {
+		t.Errorf("Expected REST mapper to be initialized but found nil")
+	}
+}
+
+type WantsRESTMapperAdmissionPlugin struct {
+	doNothingAdmission
+	doNothingPluginInitialization
+	mapper meta.RESTMapper
+}
+
+func (p *WantsRESTMapperAdmissionPlugin) SetRESTMapper(mapper meta.RESTMapper) {
+	p.mapper = mapper
+}
+
+type doNothingRESTMapper struct{}
+
+func (doNothingRESTMapper) KindFor(resource schema.GroupVersionResource) (schema.GroupVersionKind, error) {
+	return schema.GroupVersionKind{}, nil
+}
+func (doNothingRESTMapper) KindsFor(resource schema.GroupVersionResource) ([]schema.GroupVersionKind, error) {
+	return nil, nil
+}
+func (doNothingRESTMapper) ResourceFor(input schema.GroupVersionResource) (schema.GroupVersionResource, error) {
+	return schema.GroupVersionResource{}, nil
+}
+func (doNothingRESTMapper) ResourcesFor(input schema.GroupVersionResource) ([]schema.GroupVersionResource, error) {
+	return nil, nil
+}
+func (doNothingRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*meta.RESTMapping, error) {
+	return nil, nil
+}
+func (doNothingRESTMapper) RESTMappings(gk schema.GroupKind, versions ...string) ([]*meta.RESTMapping, error) {
+	return nil, nil
+}
+func (doNothingRESTMapper) ResourceSingularizer(resource string) (singular string, err error) {
+	return "", nil
+}
+
+type doNothingAdmission struct{}
+
+func (doNothingAdmission) Admit(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
+	return nil
+}
+func (doNothingAdmission) Handles(o admission.Operation) bool { return false }
+func (doNothingAdmission) Validate() error                    { return nil }
+
+type doNothingPluginInitialization struct{}
+
+func (doNothingPluginInitialization) ValidateInitialization() error { return nil }

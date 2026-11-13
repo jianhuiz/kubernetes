@@ -21,40 +21,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	yaml "go.yaml.in/yaml/v2"
 )
 
 // Package is a subset of cmd/go.Package
 type Package struct {
-	Dir          string   `json:",omitempty"` // directory containing package sources
-	ImportPath   string   `json:",omitempty"` // import path of package in dir
-	Imports      []string `json:",omitempty"` // import paths used by this package
-	TestImports  []string `json:",omitempty"` // imports from TestGoFiles
-	XTestImports []string `json:",omitempty"` // imports from XTestGoFiles
+	Dir          string   `yaml:",omitempty"` // directory containing package sources
+	ImportPath   string   `yaml:",omitempty"` // import path of package
+	Imports      []string `yaml:",omitempty"` // import paths used by this package
+	TestImports  []string `yaml:",omitempty"` // imports from TestGoFiles
+	XTestImports []string `yaml:",omitempty"` // imports from XTestGoFiles
 }
 
 // ImportRestriction describes a set of allowable import
 // trees for a tree of source code
 type ImportRestriction struct {
-	// BaseDir is the root of the package tree that is
-	// restricted by this configuration, given as a
-	// relative path from the root of the repository
-	BaseDir string `json:"baseImportPath"`
-	// IgnoredSubTrees are roots of sub-trees of the
-	// BaseDir for which we do not want to enforce
-	// any import restrictions whatsoever, given as
-	// relative paths from the root of the repository
-	IgnoredSubTrees []string `json:"ignoredSubTrees,omitempty"`
-	// AllowedImports are roots of package trees that
-	// are allowed to be imported from the BaseDir,
-	// given as paths that would be used in a Go
-	// import statement
-	AllowedImports []string `json:"allowedImports"`
+	// BaseDir is the root of a package tree that is restricted by this
+	// configuration, given as a relative path from the root of the repository.
+	// This is a directory which `go list` might not consider a package (if it
+	// has not .go files)
+	BaseDir string `yaml:"baseImportPath"`
+	// IgnoredSubTrees are roots of sub-trees of the BaseDir for which we do
+	// not want to enforce any import restrictions whatsoever, given as
+	// relative paths from the root of the repository.
+	IgnoredSubTrees []string `yaml:"ignoredSubTrees,omitempty"`
+	// AllowedImports are roots of package trees that are allowed to be
+	// imported from the BaseDir, given as paths that would be used in a Go
+	// import statement.
+	AllowedImports []string `yaml:"allowedImports"`
+	// ExcludeTests will skip checking test dependencies.
+	ExcludeTests bool `yaml:"excludeTests"`
 }
 
 // ForbiddenImportsFor determines all of the forbidden
@@ -110,7 +112,7 @@ func isPathUnder(base, path string) (bool, error) {
 
 	// if path is below base, the relative path
 	// from base to path will not start with `../`
-	return !strings.HasPrefix(relPath, "."), nil
+	return !strings.HasPrefix(relPath, ".."), nil
 }
 
 // forbiddenImportsFor determines all of the forbidden
@@ -118,10 +120,13 @@ func isPathUnder(base, path string) (bool, error) {
 // and returns a deduplicated list of them
 func (i *ImportRestriction) forbiddenImportsFor(pkg Package) []string {
 	forbiddenImportSet := map[string]struct{}{}
-	for _, imp := range append(pkg.Imports, append(pkg.TestImports, pkg.XTestImports...)...) {
-		path := extractVendorPath(imp)
-		if i.isForbidden(path) {
-			forbiddenImportSet[path] = struct{}{}
+	imports := pkg.Imports
+	if !i.ExcludeTests {
+		imports = append(imports, append(pkg.TestImports, pkg.XTestImports...)...)
+	}
+	for _, imp := range imports {
+		if i.isForbidden(imp) {
+			forbiddenImportSet[imp] = struct{}{}
 		}
 	}
 
@@ -130,16 +135,6 @@ func (i *ImportRestriction) forbiddenImportsFor(pkg Package) []string {
 		forbiddenImports = append(forbiddenImports, imp)
 	}
 	return forbiddenImports
-}
-
-// extractVendorPath removes a vendor prefix if one exists
-func extractVendorPath(path string) string {
-	vendorPath := "/vendor/"
-	if !strings.Contains(path, vendorPath) {
-		return path
-	}
-
-	return path[strings.Index(path, vendorPath)+len(vendorPath):]
 }
 
 // isForbidden determines if an import is forbidden,
@@ -164,7 +159,7 @@ var rootPackage string
 
 func main() {
 	if len(os.Args) != 3 {
-		log.Fatalf("Usage: %s ROOT RESTRICTIONS.json", os.Args[0])
+		log.Fatalf("Usage: %s <root> <restrictions.yaml>", os.Args[0])
 	}
 
 	rootPackage = os.Args[1]
@@ -176,15 +171,24 @@ func main() {
 
 	foundForbiddenImports := false
 	for _, restriction := range importRestrictions {
-		log.Printf("Inspecting imports under %s...\n", restriction.BaseDir)
-		packages, err := resolvePackageTree(restriction.BaseDir)
+		baseDir := restriction.BaseDir
+		if filepath.IsAbs(baseDir) {
+			log.Fatalf("%q appears to be an absolute path", baseDir)
+		}
+		if !strings.HasPrefix(baseDir, "./") {
+			baseDir = "./" + baseDir
+		}
+		baseDir = strings.TrimRight(baseDir, "/")
+		log.Printf("Inspecting imports under %s/...\n", baseDir)
+
+		packages, err := resolvePackageTree(baseDir)
 		if err != nil {
 			log.Fatalf("Failed to resolve package tree: %v", err)
 		} else if len(packages) == 0 {
-			log.Fatalf("Found no packages under tree %s", restriction.BaseDir)
+			log.Fatalf("Found no packages under tree %s", baseDir)
 		}
 
-		log.Printf("- validating imports for %d packages in the tree", len(packages))
+		log.Printf("- validating imports for %d packages", len(packages))
 		restrictionViolated := false
 		for _, pkg := range packages {
 			if forbidden, err := restriction.ForbiddenImportsFor(pkg); err != nil {
@@ -208,13 +212,13 @@ func main() {
 }
 
 func loadImportRestrictions(configFile string) ([]ImportRestriction, error) {
-	config, err := ioutil.ReadFile(configFile)
+	config, err := os.ReadFile(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration from %s: %v", configFile, err)
 	}
 
 	var importRestrictions []ImportRestriction
-	if err := json.Unmarshal(config, &importRestrictions); err != nil {
+	if err := yaml.Unmarshal(config, &importRestrictions); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal from %s: %v", configFile, err)
 	}
 
@@ -223,12 +227,13 @@ func loadImportRestrictions(configFile string) ([]ImportRestriction, error) {
 
 func resolvePackageTree(treeBase string) ([]Package, error) {
 	cmd := "go"
-	args := []string{"list", "-json", fmt.Sprintf("%s...", treeBase)}
-	stdout, err := exec.Command(cmd, args...).Output()
+	args := []string{"list", "-json", fmt.Sprintf("%s/...", treeBase)}
+	c := exec.Command(cmd, args...)
+	stdout, err := c.Output()
 	if err != nil {
 		var message string
 		if ee, ok := err.(*exec.ExitError); ok {
-			message = fmt.Sprintf("%v\n%v", ee, ee.Stderr)
+			message = fmt.Sprintf("%v\n%v", ee, string(ee.Stderr))
 		} else {
 			message = fmt.Sprintf("%v", err)
 		}

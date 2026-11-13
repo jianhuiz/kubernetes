@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// +k8s:deepcopy-gen=package,register
+// +k8s:deepcopy-gen=package
 // +groupName=testapigroup.apimachinery.k8s.io
 //
 // package testapigroup contains an testapigroup API used to demonstrate how to create api groups. Moreover, this is
 // used within tests.
-package testapigroup // import "k8s.io/apimachinery/pkg/apis/testapigroup"
+package testapigroup

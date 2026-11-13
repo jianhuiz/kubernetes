@@ -29,8 +29,10 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/util/wait"
 	certificatesclient "k8s.io/client-go/kubernetes/typed/certificates/v1beta1"
 	"k8s.io/client-go/rest"
+	"k8s.io/ktesting"
 )
 
 var (
@@ -114,14 +116,19 @@ func newCertificateData(certificatePEM string, keyPEM string) *certificateData {
 }
 
 type fakeManager struct {
-	cert atomic.Value // Always a *tls.Certificate
+	cert    atomic.Value // Always a *tls.Certificate
+	healthy bool
 }
 
 func (f *fakeManager) SetCertificateSigningRequestClient(certificatesclient.CertificateSigningRequestInterface) error {
 	return nil
 }
 
-func (f *fakeManager) Start() {}
+func (f *fakeManager) ServerHealthy() bool { return f.healthy }
+
+func (f *fakeManager) Start()                     {}
+func (f *fakeManager) Stop()                      {}
+func (f *fakeManager) RotateCerts() (bool, error) { return false, nil }
 
 func (f *fakeManager) Current() *tls.Certificate {
 	if val := f.cert.Load(); val != nil {
@@ -138,6 +145,8 @@ func TestRotateShutsDownConnections(t *testing.T) {
 
 	// This test fails if you comment out the t.closeAllConns() call in
 	// transport.go and don't close connections on a rotate.
+
+	logger, tCtx := ktesting.NewTestContext(t)
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -184,7 +193,7 @@ func TestRotateShutsDownConnections(t *testing.T) {
 	}
 
 	// Check for a new cert every 10 milliseconds
-	if err := updateTransport(stop, 10*time.Millisecond, c, m); err != nil {
+	if _, err := updateTransport(logger, stop, 10*time.Millisecond, c, m, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,7 +202,7 @@ func TestRotateShutsDownConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := client.Get().Do().Error(); err != nil {
+	if err := client.Get().Do(tCtx).Error(); err != nil {
 		t.Fatal(err)
 	}
 	firstCertSerial := lastSerialNumber()
@@ -202,14 +211,16 @@ func TestRotateShutsDownConnections(t *testing.T) {
 	// its connections to the server.
 	m.setCurrent(client2CertData.certificate)
 
-	for i := 0; i < 5; i++ {
-		time.Sleep(time.Millisecond * 10)
-		client.Get().Do()
+	err = wait.PollImmediate(time.Millisecond*50, wait.ForeverTestTimeout, func() (done bool, err error) {
+		client.Get().Do(tCtx)
 		if firstCertSerial.Cmp(lastSerialNumber()) != 0 {
 			// The certificate changed!
-			return
+			return true, nil
 		}
+		t.Logf("Certificate not changed, will retry.")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal("certificate rotated but client never reconnected with new cert")
 	}
-
-	t.Errorf("certificate rotated but client never reconnected with new cert")
 }

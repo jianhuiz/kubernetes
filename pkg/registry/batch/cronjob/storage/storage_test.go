@@ -19,24 +19,32 @@ package storage
 import (
 	"testing"
 
-	"k8s.io/api/batch/v2alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
-	etcdtesting "k8s.io/apiserver/pkg/storage/etcd/testing"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/testapi"
+	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
+	etcd3testing "k8s.io/apiserver/pkg/storage/etcd3/testing"
+	podtest "k8s.io/kubernetes/pkg/api/pod/testing"
 	"k8s.io/kubernetes/pkg/apis/batch"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/registry/registrytest"
 )
 
 // TODO: allow for global factory override
-func newStorage(t *testing.T) (*REST, *StatusREST, *etcdtesting.EtcdTestServer) {
-	etcdStorage, server := registrytest.NewEtcdStorage(t, batch.GroupName)
-	restOptions := generic.RESTOptions{StorageConfig: etcdStorage, Decorator: generic.UndecoratedStorage, DeleteCollectionWorkers: 1}
-	storage, statusStorage := NewREST(restOptions)
+func newStorage(t *testing.T) (*REST, *StatusREST, *etcd3testing.EtcdTestServer) {
+	etcdStorage, server := registrytest.NewEtcdStorageForResource(t, batch.SchemeGroupVersion.WithResource("cronjobs").GroupResource())
+	restOptions := generic.RESTOptions{
+		StorageConfig:           etcdStorage,
+		Decorator:               generic.UndecoratedStorage,
+		DeleteCollectionWorkers: 1,
+		ResourcePrefix:          "cronjobs",
+	}
+	storage, statusStorage, err := NewREST(restOptions)
+	if err != nil {
+		t.Fatalf("unexpected error from REST storage: %v", err)
+	}
 	return storage, statusStorage, server
 }
 
@@ -52,11 +60,7 @@ func validNewCronJob() *batch.CronJob {
 			JobTemplate: batch.JobTemplateSpec{
 				Spec: batch.JobSpec{
 					Template: api.PodTemplateSpec{
-						Spec: api.PodSpec{
-							RestartPolicy: api.RestartPolicyOnFailure,
-							DNSPolicy:     api.DNSClusterFirst,
-							Containers:    []api.Container{{Name: "abc", Image: "image", ImagePullPolicy: api.PullIfNotPresent}},
-						},
+						Spec: podtest.MakePodSpec(podtest.SetRestartPolicy(api.RestartPolicyOnFailure)),
 					},
 				},
 			},
@@ -65,37 +69,33 @@ func validNewCronJob() *batch.CronJob {
 }
 
 func TestCreate(t *testing.T) {
-	// scheduled jobs should be tested only when batch/v2alpha1 is enabled
-	if *testapi.Batch.GroupVersion() != v2alpha1.SchemeGroupVersion {
-		return
-	}
-
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	validCronJob := validNewCronJob()
 	validCronJob.ObjectMeta = metav1.ObjectMeta{}
 	test.TestCreate(
 		// valid
 		validCronJob,
-		// invalid (empty spec)
+		// invalid (no containers)
 		&batch.CronJob{
-			Spec: batch.CronJobSpec{},
+			Spec: batch.CronJobSpec{
+				JobTemplate: batch.JobTemplateSpec{
+					Spec: batch.JobSpec{
+						Template: api.PodTemplateSpec{},
+					},
+				},
+			},
 		},
 	)
 }
 
 func TestUpdate(t *testing.T) {
-	// scheduled jobs should be tested only when batch/v2alpha1 is enabled
-	if *testapi.Batch.GroupVersion() != v2alpha1.SchemeGroupVersion {
-		return
-	}
-
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	schedule := "1 1 1 1 ?"
 	test.TestUpdate(
 		// valid
@@ -116,54 +116,34 @@ func TestUpdate(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	// scheduled jobs should be tested only when batch/v2alpha1 is enabled
-	if *testapi.Batch.GroupVersion() != v2alpha1.SchemeGroupVersion {
-		return
-	}
-
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	test.TestDelete(validNewCronJob())
 }
 
 func TestGet(t *testing.T) {
-	// scheduled jobs should be tested only when batch/v2alpha1 is enabled
-	if *testapi.Batch.GroupVersion() != v2alpha1.SchemeGroupVersion {
-		return
-	}
-
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	test.TestGet(validNewCronJob())
 }
 
 func TestList(t *testing.T) {
-	// scheduled jobs should be tested only when batch/v2alpha1 is enabled
-	if *testapi.Batch.GroupVersion() != v2alpha1.SchemeGroupVersion {
-		return
-	}
-
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	test.TestList(validNewCronJob())
 }
 
 func TestWatch(t *testing.T) {
-	// scheduled jobs should be tested only when batch/v2alpha1 is enabled
-	if *testapi.Batch.GroupVersion() != v2alpha1.SchemeGroupVersion {
-		return
-	}
-
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	test.TestWatch(
 		validNewCronJob(),
 		// matching labels

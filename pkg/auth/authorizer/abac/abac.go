@@ -14,25 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package abac authorizes Kubernetes API actions using an Attribute-based access control scheme.
 package abac
-
-// Policy authorizes Kubernetes API actions using an Attribute-based access
-// control scheme.
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/golang/glog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
-	api "k8s.io/kubernetes/pkg/apis/abac"
+	"k8s.io/kubernetes/pkg/apis/abac"
+
+	// Import latest API for init/side-effects
 	_ "k8s.io/kubernetes/pkg/apis/abac/latest"
-	"k8s.io/kubernetes/pkg/apis/abac/v0"
+	v0 "k8s.io/kubernetes/pkg/apis/abac/v0"
 )
 
 type policyLoadError struct {
@@ -49,11 +50,17 @@ func (p policyLoadError) Error() string {
 	return fmt.Sprintf("error reading policy file %s: %v", p.path, p.err)
 }
 
-type policyList []*api.Policy
+var _ = authorizer.Authorizer(PolicyList{})
+var _ = authorizer.RuleResolver(PolicyList{})
 
+// PolicyList is simply a slice of Policy structs.
+type PolicyList []*abac.Policy
+
+// NewFromFile attempts to create a policy list from the given file.
+//
 // TODO: Have policies be created via an API call and stored in REST storage.
-func NewFromFile(path string) (policyList, error) {
-	// File format is one map per line.  This allows easy concatentation of files,
+func NewFromFile(path string) (PolicyList, error) {
+	// File format is one map per line.  This allows easy concatenation of files,
 	// comments in files, and identification of errors by line number.
 	file, err := os.Open(path)
 	if err != nil {
@@ -62,15 +69,15 @@ func NewFromFile(path string) (policyList, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
-	pl := make(policyList, 0)
+	pl := make(PolicyList, 0)
 
-	decoder := api.Codecs.UniversalDecoder()
+	decoder := abac.Codecs.UniversalDecoder()
 
 	i := 0
 	unversionedLines := 0
 	for scanner.Scan() {
 		i++
-		p := &api.Policy{}
+		p := &abac.Policy{}
 		b := scanner.Bytes()
 
 		// skip comment lines and blank lines
@@ -90,14 +97,14 @@ func NewFromFile(path string) (policyList, error) {
 			if err := runtime.DecodeInto(decoder, b, oldPolicy); err != nil {
 				return nil, policyLoadError{path, i, b, err}
 			}
-			if err := api.Scheme.Convert(oldPolicy, p, nil); err != nil {
+			if err := abac.Scheme.Convert(oldPolicy, p, nil); err != nil {
 				return nil, policyLoadError{path, i, b, err}
 			}
 			pl = append(pl, p)
 			continue
 		}
 
-		decodedPolicy, ok := decodedObj.(*api.Policy)
+		decodedPolicy, ok := decodedObj.(*abac.Policy)
 		if !ok {
 			return nil, policyLoadError{path, i, b, fmt.Errorf("unrecognized object: %#v", decodedObj)}
 		}
@@ -105,7 +112,7 @@ func NewFromFile(path string) (policyList, error) {
 	}
 
 	if unversionedLines > 0 {
-		glog.Warningf("Policy file %s contained unversioned rules. See docs/admin/authorization.md#abac-mode for ABAC file format details.", path)
+		klog.Warningf("Policy file %s contained unversioned rules. See docs/admin/authorization.md#abac-mode for ABAC file format details.", path)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -114,7 +121,7 @@ func NewFromFile(path string) (policyList, error) {
 	return pl, nil
 }
 
-func matches(p api.Policy, a authorizer.Attributes) bool {
+func matches(p abac.Policy, a authorizer.Attributes) bool {
 	if subjectMatches(p, a.GetUser()) {
 		if verbMatches(p, a) {
 			// Resource and non-resource requests are mutually exclusive, at most one will match a policy
@@ -130,7 +137,7 @@ func matches(p api.Policy, a authorizer.Attributes) bool {
 }
 
 // subjectMatches returns true if specified user and group properties in the policy match the attributes
-func subjectMatches(p api.Policy, user user.Info) bool {
+func subjectMatches(p abac.Policy, user user.Info) bool {
 	matched := false
 
 	if user == nil {
@@ -160,6 +167,7 @@ func subjectMatches(p api.Policy, user user.Info) bool {
 			for _, group := range groups {
 				if p.Spec.Group == group {
 					matched = true
+					break
 				}
 			}
 			if !matched {
@@ -171,7 +179,7 @@ func subjectMatches(p api.Policy, user user.Info) bool {
 	return matched
 }
 
-func verbMatches(p api.Policy, a authorizer.Attributes) bool {
+func verbMatches(p abac.Policy, a authorizer.Attributes) bool {
 	// TODO: match on verb
 
 	// All policies allow read only requests
@@ -187,7 +195,7 @@ func verbMatches(p api.Policy, a authorizer.Attributes) bool {
 	return false
 }
 
-func nonResourceMatches(p api.Policy, a authorizer.Attributes) bool {
+func nonResourceMatches(p abac.Policy, a authorizer.Attributes) bool {
 	// A non-resource policy cannot match a resource request
 	if !a.IsResourceRequest() {
 		// Allow wildcard match
@@ -206,7 +214,7 @@ func nonResourceMatches(p api.Policy, a authorizer.Attributes) bool {
 	return false
 }
 
-func resourceMatches(p api.Policy, a authorizer.Attributes) bool {
+func resourceMatches(p abac.Policy, a authorizer.Attributes) bool {
 	// A resource policy cannot match a non-resource request
 	if a.IsResourceRequest() {
 		if p.Spec.Namespace == "*" || p.Spec.Namespace == a.GetNamespace() {
@@ -220,20 +228,31 @@ func resourceMatches(p api.Policy, a authorizer.Attributes) bool {
 	return false
 }
 
-// Authorizer implements authorizer.Authorize
-func (pl policyList) Authorize(a authorizer.Attributes) (bool, string, error) {
+// Authorize implements authorizer.Authorize
+func (pl PolicyList) Authorize(ctx context.Context, a authorizer.Attributes) (authorizer.Decision, string, error) {
 	for _, p := range pl {
 		if matches(*p, a) {
-			return true, "", nil
+			return authorizer.DecisionAllow, "", nil
 		}
 	}
-	return false, "No policy matched.", nil
+	return authorizer.DecisionNoOpinion, "No policy matched.", nil
 	// TODO: Benchmark how much time policy matching takes with a medium size
 	// policy file, compared to other steps such as encoding/decoding.
 	// Then, add Caching only if needed.
 }
 
-func (pl policyList) RulesFor(user user.Info, namespace string) ([]authorizer.ResourceRuleInfo, []authorizer.NonResourceRuleInfo, bool, error) {
+// ConditionsAwareAuthorize is not conditions-aware, converts the Authorize decision.
+func (pl PolicyList) ConditionsAwareAuthorize(ctx context.Context, a authorizer.Attributes) authorizer.ConditionsAwareDecision {
+	return authorizer.ConditionsAwareDecisionFromParts(pl.Authorize(ctx, a))
+}
+
+// EvaluateConditions is not supported by this authorizer.
+func (PolicyList) EvaluateConditions(_ context.Context, _ authorizer.ConditionsAwareDecision, _ authorizer.ConditionsData) (authorizer.Decision, string, error) {
+	return authorizer.DecisionDeny, "", authorizer.ErrorConditionEvaluationNotSupported
+}
+
+// RulesFor returns rules for the given user and namespace.
+func (pl PolicyList) RulesFor(ctx context.Context, user user.Info, namespace string) ([]authorizer.ResourceRuleInfo, []authorizer.NonResourceRuleInfo, bool, error) {
 	var (
 		resourceRules    []authorizer.ResourceRuleInfo
 		nonResourceRules []authorizer.NonResourceRuleInfo

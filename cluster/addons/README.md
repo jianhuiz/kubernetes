@@ -1,4 +1,6 @@
-# Cluster add-ons
+# Legacy Cluster add-ons
+
+For more information on add-ons see [the documentation](https://kubernetes.io/docs/concepts/cluster-administration/addons/).
 
 ## Overview
 
@@ -30,5 +32,3 @@ It would be hard to update `Pod` because many fields in `Pod` are immutable. For
 `ReplicationController` and `DaemonSet`, in-place update may not trigger the underlying
 pods to be re-created. You probably need to change their names during update to trigger
 a complete deletion and creation.
-
-[![Analytics](https://kubernetes-site.appspot.com/UA-36037335-10/GitHub/cluster/addons/README.md?pixel)]()

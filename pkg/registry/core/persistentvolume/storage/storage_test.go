@@ -17,24 +17,27 @@ limitations under the License.
 package storage
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/google/go-cmp/cmp"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/diff"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
+	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
 	"k8s.io/apiserver/pkg/registry/rest"
-	etcdtesting "k8s.io/apiserver/pkg/storage/etcd/testing"
-	"k8s.io/kubernetes/pkg/api"
+	etcd3testing "k8s.io/apiserver/pkg/storage/etcd3/testing"
+	api "k8s.io/kubernetes/pkg/apis/core"
+	"k8s.io/kubernetes/pkg/registry/core/persistentvolume"
 	"k8s.io/kubernetes/pkg/registry/registrytest"
 )
 
-func newStorage(t *testing.T) (*REST, *StatusREST, *etcdtesting.EtcdTestServer) {
+func newStorage(t *testing.T) (*REST, *StatusREST, *etcd3testing.EtcdTestServer) {
 	etcdStorage, server := registrytest.NewEtcdStorage(t, "")
 	restOptions := generic.RESTOptions{
 		StorageConfig:           etcdStorage,
@@ -42,7 +45,10 @@ func newStorage(t *testing.T) (*REST, *StatusREST, *etcdtesting.EtcdTestServer) 
 		DeleteCollectionWorkers: 1,
 		ResourcePrefix:          "persistentvolumes",
 	}
-	persistentVolumeStorage, statusStorage := NewREST(restOptions)
+	persistentVolumeStorage, statusStorage, err := NewREST(restOptions)
+	if err != nil {
+		t.Fatalf("unexpected error from REST storage: %v", err)
+	}
 	return persistentVolumeStorage, statusStorage, server
 }
 
@@ -53,6 +59,7 @@ func newHostPathType(pathType string) *api.HostPathType {
 }
 
 func validNewPersistentVolume(name string) *api.PersistentVolume {
+	now := persistentvolume.NowFunc()
 	pv := &api.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -68,16 +75,12 @@ func validNewPersistentVolume(name string) *api.PersistentVolume {
 			PersistentVolumeReclaimPolicy: api.PersistentVolumeReclaimRetain,
 		},
 		Status: api.PersistentVolumeStatus{
-			Phase:   api.VolumePending,
-			Message: "bar",
-			Reason:  "foo",
+			Phase:                   api.VolumePending,
+			Message:                 "bar",
+			Reason:                  "foo",
+			LastPhaseTransitionTime: &now,
 		},
 	}
-	return pv
-}
-
-func validChangedPersistentVolume() *api.PersistentVolume {
-	pv := validNewPersistentVolume("foo")
 	return pv
 }
 
@@ -85,7 +88,7 @@ func TestCreate(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	pv := validNewPersistentVolume("foo")
 	pv.ObjectMeta = metav1.ObjectMeta{GenerateName: "foo"}
 	test.TestCreate(
@@ -102,7 +105,7 @@ func TestUpdate(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestUpdate(
 		// valid
 		validNewPersistentVolume("foo"),
@@ -121,7 +124,7 @@ func TestDelete(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope().ReturnDeletedObject()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope().ReturnDeletedObject()
 	test.TestDelete(validNewPersistentVolume("foo"))
 }
 
@@ -129,7 +132,7 @@ func TestGet(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestGet(validNewPersistentVolume("foo"))
 }
 
@@ -137,7 +140,7 @@ func TestList(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestList(validNewPersistentVolume("foo"))
 }
 
@@ -145,7 +148,7 @@ func TestWatch(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestWatch(
 		validNewPersistentVolume("foo"),
 		// matching labels
@@ -170,24 +173,35 @@ func TestUpdateStatus(t *testing.T) {
 	storage, statusStorage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	ctx := genericapirequest.NewContext()
+	ctx := genericregistrytest.NewClusterScopeContext(storage.Store)
+	statusCtx := genericregistrytest.NewClusterScopeContext(storage.Store, "status")
 	key, _ := storage.KeyFunc(ctx, "foo")
 	pvStart := validNewPersistentVolume("foo")
-	err := storage.Storage.Create(ctx, key, pvStart, nil, 0)
+	err := storage.Storage.Create(ctx, key, pvStart, nil, 0, false)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
+
+	pvStartTimestamp, err := getPhaseTranstitionTime(ctx, pvStart.Name, storage)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	// We need to set custom timestamp which is not the same as the one on existing PV
+	// - doing so will prevent timestamp update on phase change and custom one is used instead.
+	pvStartTimestamp = &metav1.Time{Time: pvStartTimestamp.Time.Add(time.Second)}
 
 	pvIn := &api.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "foo",
 		},
 		Status: api.PersistentVolumeStatus{
-			Phase: api.VolumeBound,
+			Phase:                   api.VolumeBound,
+			LastPhaseTransitionTime: pvStartTimestamp,
 		},
 	}
 
-	_, _, err = statusStorage.Update(ctx, pvIn.Name, rest.DefaultUpdatedObjectInfo(pvIn, api.Scheme))
+	_, _, err = statusStorage.Update(statusCtx, pvIn.Name, rest.DefaultUpdatedObjectInfo(pvIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -198,8 +212,16 @@ func TestUpdateStatus(t *testing.T) {
 	pvOut := obj.(*api.PersistentVolume)
 	// only compare the relevant change b/c metadata will differ
 	if !apiequality.Semantic.DeepEqual(pvIn.Status, pvOut.Status) {
-		t.Errorf("unexpected object: %s", diff.ObjectDiff(pvIn.Status, pvOut.Status))
+		t.Errorf("unexpected object: %s", cmp.Diff(pvIn.Status, pvOut.Status))
 	}
+}
+
+func getPhaseTranstitionTime(ctx context.Context, pvName string, storage *REST) (*metav1.Time, error) {
+	obj, err := storage.Get(ctx, pvName, &metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return obj.(*api.PersistentVolume).Status.LastPhaseTransitionTime, nil
 }
 
 func TestShortNames(t *testing.T) {

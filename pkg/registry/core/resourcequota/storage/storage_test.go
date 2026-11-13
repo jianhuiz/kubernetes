@@ -19,21 +19,21 @@ package storage
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/diff"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
+	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
 	"k8s.io/apiserver/pkg/registry/rest"
-	etcdtesting "k8s.io/apiserver/pkg/storage/etcd/testing"
-	"k8s.io/kubernetes/pkg/api"
+	etcd3testing "k8s.io/apiserver/pkg/storage/etcd3/testing"
+	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/registry/registrytest"
 )
 
-func newStorage(t *testing.T) (*REST, *StatusREST, *etcdtesting.EtcdTestServer) {
+func newStorage(t *testing.T) (*REST, *StatusREST, *etcd3testing.EtcdTestServer) {
 	etcdStorage, server := registrytest.NewEtcdStorage(t, "")
 	restOptions := generic.RESTOptions{
 		StorageConfig:           etcdStorage,
@@ -41,7 +41,10 @@ func newStorage(t *testing.T) (*REST, *StatusREST, *etcdtesting.EtcdTestServer) 
 		DeleteCollectionWorkers: 1,
 		ResourcePrefix:          "resourcequotas",
 	}
-	resourceQuotaStorage, statusStorage := NewREST(restOptions)
+	resourceQuotaStorage, statusStorage, err := NewREST(restOptions)
+	if err != nil {
+		t.Fatalf("unexpected error from REST storage: %v", err)
+	}
 	return resourceQuotaStorage, statusStorage, server
 }
 
@@ -68,7 +71,7 @@ func TestCreate(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	resourcequota := validNewResourceQuota()
 	resourcequota.ObjectMeta = metav1.ObjectMeta{}
 	test.TestCreate(
@@ -85,9 +88,9 @@ func TestCreateSetsFields(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	ctx := genericapirequest.NewDefaultContext()
+	ctx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault)
 	resourcequota := validNewResourceQuota()
-	_, err := storage.Create(genericapirequest.NewDefaultContext(), resourcequota, false)
+	_, err := storage.Create(ctx, resourcequota, rest.ValidateAllObjectFunc, &metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +112,7 @@ func TestDelete(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ReturnDeletedObject()
+	test := genericregistrytest.New(t, storage.Store).ReturnDeletedObject()
 	test.TestDelete(validNewResourceQuota())
 }
 
@@ -117,7 +120,7 @@ func TestGet(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	test.TestGet(validNewResourceQuota())
 }
 
@@ -125,7 +128,7 @@ func TestList(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	test.TestList(validNewResourceQuota())
 }
 
@@ -133,7 +136,7 @@ func TestWatch(t *testing.T) {
 	storage, _, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store)
+	test := genericregistrytest.New(t, storage.Store)
 	test.TestWatch(
 		validNewResourceQuota(),
 		// matching labels
@@ -146,7 +149,7 @@ func TestWatch(t *testing.T) {
 		[]fields.Set{
 			{"metadata.name": "foo"},
 		},
-		// not matchin fields
+		// not matching fields
 		[]fields.Set{
 			{"metadata.name": "bar"},
 		},
@@ -157,11 +160,12 @@ func TestUpdateStatus(t *testing.T) {
 	storage, status, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	ctx := genericapirequest.NewDefaultContext()
+	ctx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault)
+	statusCtx := genericregistrytest.NewNamespaceScopeContext(storage.Store, metav1.NamespaceDefault, "status")
 
 	key, _ := storage.KeyFunc(ctx, "foo")
 	resourcequotaStart := validNewResourceQuota()
-	err := storage.Storage.Create(ctx, key, resourcequotaStart, nil, 0)
+	err := storage.Storage.Create(ctx, key, resourcequotaStart, nil, 0, false)
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -191,15 +195,18 @@ func TestUpdateStatus(t *testing.T) {
 		},
 	}
 
-	_, _, err = status.Update(ctx, resourcequotaIn.Name, rest.DefaultUpdatedObjectInfo(resourcequotaIn, api.Scheme))
+	_, _, err = status.Update(statusCtx, resourcequotaIn.Name, rest.DefaultUpdatedObjectInfo(resourcequotaIn), rest.ValidateAllObjectFunc, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
 	obj, err := storage.Get(ctx, "foo", &metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
 	rqOut := obj.(*api.ResourceQuota)
 	// only compare the meaningful update b/c we can't compare due to metadata
 	if !apiequality.Semantic.DeepEqual(resourcequotaIn.Status, rqOut.Status) {
-		t.Errorf("unexpected object: %s", diff.ObjectDiff(resourcequotaIn, rqOut))
+		t.Errorf("unexpected object: %s", cmp.Diff(resourcequotaIn, rqOut))
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/ktesting"
 )
 
 func TestMultiRESTMapperResourceFor(t *testing.T) {
@@ -56,8 +57,9 @@ func TestMultiRESTMapperResourceFor(t *testing.T) {
 		},
 	}
 
+	tCtx := ktesting.Init(t)
 	for _, tc := range tcs {
-		actualResult, actualErr := tc.mapper.ResourceFor(tc.input)
+		actualResult, actualErr := ToMultiRESTMapperWithContext(tc.mapper).ResourceForWithContext(tCtx, tc.input)
 		if e, a := tc.result, actualResult; e != a {
 			t.Errorf("%s: expected %v, got %v", tc.name, e, a)
 		}
@@ -123,8 +125,9 @@ func TestMultiRESTMapperResourcesFor(t *testing.T) {
 		},
 	}
 
+	tCtx := ktesting.Init(t)
 	for _, tc := range tcs {
-		actualResult, actualErr := tc.mapper.ResourcesFor(tc.input)
+		actualResult, actualErr := ToMultiRESTMapperWithContext(tc.mapper).ResourcesForWithContext(tCtx, tc.input)
 		if e, a := tc.result, actualResult; !reflect.DeepEqual(e, a) {
 			t.Errorf("%s: expected %v, got %v", tc.name, e, a)
 		}
@@ -190,8 +193,9 @@ func TestMultiRESTMapperKindsFor(t *testing.T) {
 		},
 	}
 
+	tCtx := ktesting.Init(t)
 	for _, tc := range tcs {
-		actualResult, actualErr := tc.mapper.KindsFor(tc.input)
+		actualResult, actualErr := ToMultiRESTMapperWithContext(tc.mapper).KindsForWithContext(tCtx, tc.input)
 		if e, a := tc.result, actualResult; !reflect.DeepEqual(e, a) {
 			t.Errorf("%s: expected %v, got %v", tc.name, e, a)
 		}
@@ -239,8 +243,9 @@ func TestMultiRESTMapperKindFor(t *testing.T) {
 		},
 	}
 
+	tCtx := ktesting.Init(t)
 	for _, tc := range tcs {
-		actualResult, actualErr := tc.mapper.KindFor(tc.input)
+		actualResult, actualErr := ToMultiRESTMapperWithContext(tc.mapper).KindForWithContext(tCtx, tc.input)
 		if e, a := tc.result, actualResult; e != a {
 			t.Errorf("%s: expected %v, got %v", tc.name, e, a)
 		}
@@ -261,42 +266,79 @@ func TestMultiRESTMapperRESTMappings(t *testing.T) {
 	tcs := []struct {
 		name string
 
-		mapper MultiRESTMapper
-		input  schema.GroupKind
-		result []*RESTMapping
-		err    error
+		mapper    MultiRESTMapper
+		groupKind schema.GroupKind
+		versions  []string
+		result    []*RESTMapping
+		err       error
 	}{
 		{
-			name:   "empty",
-			mapper: MultiRESTMapper{},
-			input:  schema.GroupKind{Kind: "Foo"},
-			result: nil,
-			err:    &NoKindMatchError{PartialKind: schema.GroupVersionKind{Kind: "Foo"}},
+			name:      "empty with no versions",
+			mapper:    MultiRESTMapper{},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			result:    nil,
+			err:       &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}},
 		},
 		{
-			name:   "ignore not found",
-			mapper: MultiRESTMapper{fixedRESTMapper{err: &NoKindMatchError{PartialKind: schema.GroupVersionKind{Kind: "IGNORE_THIS"}}}},
-			input:  schema.GroupKind{Kind: "Foo"},
-			result: nil,
-			err:    &NoKindMatchError{PartialKind: schema.GroupVersionKind{Kind: "Foo"}},
+			name:      "empty with one version",
+			mapper:    MultiRESTMapper{},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			versions:  []string{"v1beta"},
+			result:    nil,
+			err:       &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}, SearchedVersions: []string{"v1beta"}},
 		},
 		{
-			name:   "accept first failure",
-			mapper: MultiRESTMapper{fixedRESTMapper{err: errors.New("fail on this")}, fixedRESTMapper{mappings: []*RESTMapping{mapping1}}},
-			input:  schema.GroupKind{Kind: "Foo"},
-			result: nil,
-			err:    errors.New("fail on this"),
+			name:      "empty with multi(two) vesions",
+			mapper:    MultiRESTMapper{},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			versions:  []string{"v1beta", "v2"},
+			result:    nil,
+			err:       &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}, SearchedVersions: []string{"v1beta", "v2"}},
 		},
 		{
-			name:   "return both",
-			mapper: MultiRESTMapper{fixedRESTMapper{mappings: []*RESTMapping{mapping1}}, fixedRESTMapper{mappings: []*RESTMapping{mapping2}}},
-			input:  schema.GroupKind{Kind: "Foo"},
-			result: []*RESTMapping{mapping1, mapping2},
+			name:      "ignore not found with kind not exist",
+			mapper:    MultiRESTMapper{fixedRESTMapper{err: &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "IGNORE_THIS"}}}},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			versions:  nil,
+			result:    nil,
+			err:       &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}},
+		},
+		{
+			name:      "ignore not found with version not exist",
+			mapper:    MultiRESTMapper{fixedRESTMapper{err: &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}, SearchedVersions: []string{"v1"}}}},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			versions:  []string{"v1beta"},
+			result:    nil,
+			err:       &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}, SearchedVersions: []string{"v1beta"}},
+		},
+		{
+			name:      "ignore not found with multi versions not exist",
+			mapper:    MultiRESTMapper{fixedRESTMapper{err: &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}, SearchedVersions: []string{"v1"}}}},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			versions:  []string{"v1beta", "v2"},
+			result:    nil,
+			err:       &NoKindMatchError{GroupKind: schema.GroupKind{Kind: "Foo"}, SearchedVersions: []string{"v1beta", "v2"}},
+		},
+		{
+			name:      "accept first failure",
+			mapper:    MultiRESTMapper{fixedRESTMapper{err: errors.New("fail on this")}, fixedRESTMapper{mappings: []*RESTMapping{mapping1}}},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			versions:  []string{"v1beta"},
+			result:    nil,
+			err:       errors.New("fail on this"),
+		},
+		{
+			name:      "return both",
+			mapper:    MultiRESTMapper{fixedRESTMapper{mappings: []*RESTMapping{mapping1}}, fixedRESTMapper{mappings: []*RESTMapping{mapping2}}},
+			groupKind: schema.GroupKind{Kind: "Foo"},
+			versions:  []string{"v1beta"},
+			result:    []*RESTMapping{mapping1, mapping2},
 		},
 	}
 
+	tCtx := ktesting.Init(t)
 	for _, tc := range tcs {
-		actualResult, actualErr := tc.mapper.RESTMappings(tc.input)
+		actualResult, actualErr := ToMultiRESTMapperWithContext(tc.mapper).RESTMappingsWithContext(tCtx, tc.groupKind, tc.versions...)
 		if e, a := tc.result, actualResult; !reflect.DeepEqual(e, a) {
 			t.Errorf("%s: expected %v, got %v", tc.name, e, a)
 		}

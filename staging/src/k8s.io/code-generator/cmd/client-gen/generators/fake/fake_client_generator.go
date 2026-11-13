@@ -17,106 +17,112 @@ limitations under the License.
 package fake
 
 import (
+	"path"
 	"path/filepath"
 	"strings"
 
-	"k8s.io/gengo/generator"
-	"k8s.io/gengo/types"
+	"k8s.io/gengo/v2/generator"
+	"k8s.io/gengo/v2/types"
 
-	clientgenargs "k8s.io/code-generator/cmd/client-gen/args"
+	"k8s.io/code-generator/cmd/client-gen/args"
 	scheme "k8s.io/code-generator/cmd/client-gen/generators/scheme"
 	"k8s.io/code-generator/cmd/client-gen/generators/util"
 	clientgentypes "k8s.io/code-generator/cmd/client-gen/types"
 )
 
-func PackageForGroup(gv clientgentypes.GroupVersion, typeList []*types.Type, clientsetPackage string, inputPackage string, boilerplate []byte) generator.Package {
-	outputPackage := strings.ToLower(filepath.Join(clientsetPackage, "typed", gv.Group.NonEmpty(), gv.Version.NonEmpty(), "fake"))
+func TargetForGroup(gv clientgentypes.GroupVersion, typeList []*types.Type, clientsetDir, clientsetPkg string, groupPkgName string, groupGoName string, inputPkg string, applyBuilderPackage string, boilerplate []byte) generator.Target {
 	// TODO: should make this a function, called by here and in client-generator.go
-	realClientPackage := filepath.Join(clientsetPackage, "typed", gv.Group.NonEmpty(), gv.Version.NonEmpty())
-	return &generator.DefaultPackage{
-		PackageName: "fake",
-		PackagePath: outputPackage,
-		HeaderText:  boilerplate,
-		PackageDocumentation: []byte(
-			`// Package fake has the automatically generated clients.
-`),
-		// GeneratorFunc returns a list of generators. Each generator makes a
+	subdir := []string{"typed", strings.ToLower(groupPkgName), strings.ToLower(gv.Version.NonEmpty())}
+	outputDir := filepath.Join(clientsetDir, filepath.Join(subdir...), "fake")
+	outputPkg := path.Join(clientsetPkg, path.Join(subdir...), "fake")
+	realClientPkg := path.Join(clientsetPkg, path.Join(subdir...))
+
+	return &generator.SimpleTarget{
+		PkgName:       "fake",
+		PkgPath:       outputPkg,
+		PkgDir:        outputDir,
+		HeaderComment: boilerplate,
+		PkgDocComment: []byte("// Package fake has the automatically generated clients.\n"),
+		// GeneratorsFunc returns a list of generators. Each generator makes a
 		// single file.
-		GeneratorFunc: func(c *generator.Context) (generators []generator.Generator) {
+		GeneratorsFunc: func(c *generator.Context) (generators []generator.Generator) {
 			generators = []generator.Generator{
 				// Always generate a "doc.go" file.
-				generator.DefaultGen{OptionalName: "doc"},
+				generator.GoGenerator{OutputFilename: "doc.go"},
 			}
 			// Since we want a file per type that we generate a client for, we
 			// have to provide a function for this.
 			for _, t := range typeList {
 				generators = append(generators, &genFakeForType{
-					DefaultGen: generator.DefaultGen{
-						OptionalName: "fake_" + strings.ToLower(c.Namers["private"].Name(t)),
+					GoGenerator: generator.GoGenerator{
+						OutputFilename: "fake_" + strings.ToLower(c.Namers["private"].Name(t)) + ".go",
 					},
-					outputPackage: outputPackage,
-					inputPackage:  inputPackage,
-					group:         gv.Group.NonEmpty(),
-					version:       gv.Version.String(),
-					typeToMatch:   t,
-					imports:       generator.NewImportTracker(),
+					outputPackage:             outputPkg,
+					realClientPackage:         realClientPkg,
+					inputPackage:              inputPkg,
+					version:                   gv.Version.String(),
+					groupGoName:               groupGoName,
+					typeToMatch:               t,
+					imports:                   generator.NewImportTrackerForPackage(outputPkg),
+					applyConfigurationPackage: applyBuilderPackage,
 				})
 			}
 
 			generators = append(generators, &genFakeForGroup{
-				DefaultGen: generator.DefaultGen{
-					OptionalName: "fake_" + gv.Group.NonEmpty() + "_client",
+				GoGenerator: generator.GoGenerator{
+					OutputFilename: "fake_" + groupPkgName + "_client.go",
 				},
-				outputPackage:     outputPackage,
-				realClientPackage: realClientPackage,
-				group:             gv.Group.NonEmpty(),
+				outputPackage:     outputPkg,
+				realClientPackage: realClientPkg,
 				version:           gv.Version.String(),
+				groupGoName:       groupGoName,
 				types:             typeList,
-				imports:           generator.NewImportTracker(),
+				imports:           generator.NewImportTrackerForPackage(outputPkg),
 			})
 			return generators
 		},
 		FilterFunc: func(c *generator.Context, t *types.Type) bool {
-			return util.MustParseClientGenTags(t.SecondClosestCommentLines).GenerateClient
+			return util.MustParseClientGenTags(append(t.SecondClosestCommentLines, t.CommentLines...)).GenerateClient
 		},
 	}
 }
 
-func PackageForClientset(customArgs *clientgenargs.CustomArgs, fakeClientsetPackage string, boilerplate []byte) generator.Package {
-	return &generator.DefaultPackage{
+func TargetForClientset(args *args.Args, clientsetDir, clientsetPkg string, applyConfigurationPkg string, groupGoNames map[clientgentypes.GroupVersion]string, boilerplate []byte) generator.Target {
+	return &generator.SimpleTarget{
 		// TODO: we'll generate fake clientset for different release in the future.
 		// Package name and path are hard coded for now.
-		PackageName: "fake",
-		PackagePath: filepath.Join(fakeClientsetPackage, "fake"),
-		HeaderText:  boilerplate,
-		PackageDocumentation: []byte(
-			`// This package has the automatically generated fake clientset.
-`),
-		// GeneratorFunc returns a list of generators. Each generator generates a
+		PkgName:       "fake",
+		PkgPath:       path.Join(clientsetPkg, "fake"),
+		PkgDir:        filepath.Join(clientsetDir, "fake"),
+		HeaderComment: boilerplate,
+		PkgDocComment: []byte("// This package has the automatically generated fake clientset.\n"),
+		// GeneratorsFunc returns a list of generators. Each generator generates a
 		// single file.
-		GeneratorFunc: func(c *generator.Context) (generators []generator.Generator) {
+		GeneratorsFunc: func(c *generator.Context) (generators []generator.Generator) {
 			generators = []generator.Generator{
 				// Always generate a "doc.go" file.
-				generator.DefaultGen{OptionalName: "doc"},
+				generator.GoGenerator{OutputFilename: "doc.go"},
 
 				&genClientset{
-					DefaultGen: generator.DefaultGen{
-						OptionalName: "clientset_generated",
+					GoGenerator: generator.GoGenerator{
+						OutputFilename: "clientset_generated.go",
 					},
-					groups:               customArgs.Groups,
-					fakeClientsetPackage: fakeClientsetPackage,
-					outputPackage:        "fake",
-					imports:              generator.NewImportTracker(),
-					realClientsetPackage: filepath.Join(customArgs.ClientsetOutputPath, customArgs.ClientsetName),
+					groups:                    args.Groups,
+					groupGoNames:              groupGoNames,
+					fakeClientsetPackage:      clientsetPkg,
+					imports:                   generator.NewImportTrackerForPackage(clientsetPkg),
+					realClientsetPackage:      clientsetPkg,
+					applyConfigurationPackage: applyConfigurationPkg,
 				},
 				&scheme.GenScheme{
-					DefaultGen: generator.DefaultGen{
-						OptionalName: "register",
+					GoGenerator: generator.GoGenerator{
+						OutputFilename: "register.go",
 					},
-					InputPackages: customArgs.GroupVersionToInputPath,
-					OutputPackage: fakeClientsetPackage,
-					Groups:        customArgs.Groups,
-					ImportTracker: generator.NewImportTracker(),
+					InputPackages: args.GroupVersionPackages(),
+					OutputPkg:     clientsetPkg,
+					Groups:        args.Groups,
+					GroupGoNames:  groupGoNames,
+					ImportTracker: generator.NewImportTrackerForPackage(clientsetPkg),
 					PrivateScheme: true,
 				},
 			}

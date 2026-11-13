@@ -34,7 +34,7 @@ type ReadyFunc func() bool
 // Handler is a base for admission control handlers that
 // support a predefined set of operations
 type Handler struct {
-	operations sets.String
+	operations sets.Set[string]
 	readyFunc  ReadyFunc
 }
 
@@ -46,7 +46,7 @@ func (h *Handler) Handles(operation Operation) bool {
 // NewHandler creates a new base handler that handles the passed
 // in operations
 func NewHandler(ops ...Operation) *Handler {
-	operations := sets.NewString()
+	operations := sets.New[string]()
 	for _, op := range ops {
 		operations.Insert(string(op))
 	}
@@ -66,14 +66,8 @@ func (h *Handler) WaitForReady() bool {
 	if h.readyFunc == nil {
 		return true
 	}
-	return h.waitForReadyInternal(time.After(timeToWaitForReady))
-}
 
-func (h *Handler) waitForReadyInternal(timeout <-chan time.Time) bool {
-	// there is no configured ready func, so return immediately
-	if h.readyFunc == nil {
-		return true
-	}
+	timeout := time.After(timeToWaitForReady)
 	for !h.readyFunc() {
 		select {
 		case <-time.After(100 * time.Millisecond):

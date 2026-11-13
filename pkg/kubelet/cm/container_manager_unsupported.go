@@ -1,4 +1,4 @@
-// +build !linux,!windows
+//go:build !linux && !windows
 
 /*
 Copyright 2015 The Kubernetes Authors.
@@ -19,71 +19,30 @@ limitations under the License.
 package cm
 
 import (
+	"context"
 	"fmt"
 
-	"k8s.io/api/core/v1"
+	"k8s.io/mount-utils"
+
+	v1 "k8s.io/api/core/v1"
+	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
-	internalapi "k8s.io/kubernetes/pkg/kubelet/apis/cri"
+	internalapi "k8s.io/cri-api/pkg/apis"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
-	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	"k8s.io/kubernetes/pkg/kubelet/config"
 	"k8s.io/kubernetes/pkg/kubelet/status"
-	"k8s.io/kubernetes/pkg/util/mount"
 )
 
 type unsupportedContainerManager struct {
+	containerManagerStub
 }
 
 var _ ContainerManager = &unsupportedContainerManager{}
 
-func (unsupportedContainerManager) Start(_ *v1.Node, _ ActivePodsFunc, _ status.PodStatusProvider, _ internalapi.RuntimeService) error {
+func (unsupportedContainerManager) Start(_ context.Context, _ *v1.Node, _ ActivePodsFunc, _ GetNodeFunc, _ config.SourcesReady, _ status.PodStatusProvider, _ internalapi.RuntimeService, _ bool) error {
 	return fmt.Errorf("Container Manager is unsupported in this build")
 }
 
-func (unsupportedContainerManager) SystemCgroupsLimit() v1.ResourceList {
-	return v1.ResourceList{}
-}
-
-func (unsupportedContainerManager) GetNodeConfig() NodeConfig {
-	return NodeConfig{}
-}
-
-func (unsupportedContainerManager) GetMountedSubsystems() *CgroupSubsystems {
-	return &CgroupSubsystems{}
-}
-
-func (unsupportedContainerManager) GetQOSContainersInfo() QOSContainersInfo {
-	return QOSContainersInfo{}
-}
-
-func (unsupportedContainerManager) UpdateQOSCgroups() error {
-	return nil
-}
-
-func (cm *unsupportedContainerManager) Status() Status {
-	return Status{}
-}
-
-func (cm *unsupportedContainerManager) GetNodeAllocatableReservation() v1.ResourceList {
-	return nil
-}
-
-func (cm *unsupportedContainerManager) GetCapacity() v1.ResourceList {
-	return nil
-}
-
-func (cm *unsupportedContainerManager) NewPodContainerManager() PodContainerManager {
-	return &unsupportedPodContainerManager{}
-}
-
-func (cm *unsupportedContainerManager) GetResources(pod *v1.Pod, container *v1.Container, activePods []*v1.Pod) (*kubecontainer.RunContainerOptions, error) {
-	return &kubecontainer.RunContainerOptions{}, nil
-}
-
-func (cm *unsupportedContainerManager) InternalContainerLifecycle() InternalContainerLifecycle {
-	return &internalContainerLifecycleImpl{cpumanager.NewFakeManager()}
-}
-
-func NewContainerManager(_ mount.Interface, _ cadvisor.Interface, _ NodeConfig, failSwapOn bool, devicePluginEnabled bool, recorder record.EventRecorder) (ContainerManager, error) {
+func NewContainerManager(_ context.Context, _ mount.Interface, _ cadvisor.Interface, _ NodeConfig, failSwapOn bool, recorder record.EventRecorder, kubeClient clientset.Interface) (ContainerManager, error) {
 	return &unsupportedContainerManager{}, nil
 }

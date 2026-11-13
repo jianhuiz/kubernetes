@@ -17,56 +17,87 @@ limitations under the License.
 package registry
 
 import (
-	"github.com/golang/glog"
+	"fmt"
+	"sync"
 
+	"k8s.io/klog/v2"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/storage"
-	etcdstorage "k8s.io/apiserver/pkg/storage/etcd"
+	cacherstorage "k8s.io/apiserver/pkg/storage/cacher"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/storage/storagebackend/factory"
+	"k8s.io/client-go/tools/cache"
 )
 
 // Creates a cacher based given storageConfig.
-func StorageWithCacher(capacity int) generic.StorageDecorator {
+func StorageWithCacher() generic.StorageDecorator {
 	return func(
-		copier runtime.ObjectCopier,
-		storageConfig *storagebackend.Config,
-		objectType runtime.Object,
+		storageConfig *storagebackend.ConfigForResource,
 		resourcePrefix string,
-		keyFunc func(obj runtime.Object) (string, error),
+		cacheKeyFunc generic.CacheKeyFunc,
+		reverseKeyFunc storage.ReverseKeyFunc,
+		newFunc func() runtime.Object,
 		newListFunc func() runtime.Object,
 		getAttrsFunc storage.AttrFunc,
-		triggerFunc storage.TriggerPublisherFunc) (storage.Interface, factory.DestroyFunc) {
+		triggerFuncs storage.IndexerFuncs,
+		indexers *cache.Indexers) (storage.Interface, factory.DestroyFunc, error) {
 
-		s, d := generic.NewRawStorage(storageConfig)
-		if capacity == 0 {
-			glog.V(5).Infof("Storage caching is disabled for %T", objectType)
-			return s, d
+		if cacheKeyFunc == nil {
+			return nil, nil, fmt.Errorf("cache key func must be provided when storage caching is enabled")
 		}
-		glog.V(5).Infof("Storage caching is enabled for %T with capacity %v", objectType, capacity)
+		s, d, err := generic.NewRawStorage(storageConfig, newFunc, newListFunc, reverseKeyFunc, resourcePrefix)
+		if err != nil {
+			return s, d, err
+		}
+		if klogV := klog.V(5); klogV.Enabled() {
+			//nolint:logcheck // It complains about the key/value pairs because it cannot check them.
+			klogV.InfoS("Storage caching is enabled", objectTypeToArgs(newFunc())...)
+		}
 
-		// TODO: we would change this later to make storage always have cacher and hide low level KV layer inside.
-		// Currently it has two layers of same storage interface -- cacher and low level kv.
-		cacherConfig := storage.CacherConfig{
-			CacheCapacity:        capacity,
-			Storage:              s,
-			Versioner:            etcdstorage.APIObjectVersioner{},
-			Copier:               copier,
-			Type:                 objectType,
-			ResourcePrefix:       resourcePrefix,
-			KeyFunc:              keyFunc,
-			NewListFunc:          newListFunc,
-			GetAttrsFunc:         getAttrsFunc,
-			TriggerPublisherFunc: triggerFunc,
-			Codec:                storageConfig.Codec,
+		cacherConfig := cacherstorage.Config{
+			Storage:                       s,
+			Versioner:                     storage.APIObjectVersioner{},
+			GroupResource:                 storageConfig.GroupResource,
+			EventsHistoryWindow:           storageConfig.EventsHistoryWindow,
+			ResourcePrefix:                resourcePrefix,
+			KeyFunc:                       cacheKeyFunc,
+			NewFunc:                       newFunc,
+			NewListFunc:                   newListFunc,
+			GetAttrsFunc:                  getAttrsFunc,
+			IndexerFuncs:                  triggerFuncs,
+			Indexers:                      indexers,
+			Codec:                         storageConfig.Codec,
+			DisableConsistentGetFromCache: storageConfig.Transformer != nil,
 		}
-		cacher := storage.NewCacherFromConfig(cacherConfig)
+		cacher, err := cacherstorage.NewCacherFromConfig(cacherConfig)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		delegator := cacherstorage.NewCacheDelegator(cacher, s)
+		var once sync.Once
 		destroyFunc := func() {
-			cacher.Stop()
-			d()
+			once.Do(func() {
+				delegator.Stop()
+				cacher.Stop()
+				d()
+			})
 		}
 
-		return cacher, destroyFunc
+		return delegator, destroyFunc, nil
 	}
+}
+
+func objectTypeToArgs(obj runtime.Object) []interface{} {
+	// special-case unstructured objects that tell us their apiVersion/kind
+	if u, isUnstructured := obj.(*unstructured.Unstructured); isUnstructured {
+		if apiVersion, kind := u.GetAPIVersion(), u.GetKind(); len(apiVersion) > 0 && len(kind) > 0 {
+			return []interface{}{"apiVersion", apiVersion, "kind", kind}
+		}
+	}
+
+	// otherwise just return the type
+	return []interface{}{"type", fmt.Sprintf("%T", obj)}
 }

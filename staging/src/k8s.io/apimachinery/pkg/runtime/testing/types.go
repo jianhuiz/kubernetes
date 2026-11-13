@@ -17,8 +17,11 @@ limitations under the License.
 package testing
 
 import (
+	"fmt"
+
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/json"
 )
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -31,7 +34,7 @@ type EmbeddedTest struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type EmbeddedTestExternal struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	ID               string               `json:"id,omitempty"`
 	Object           runtime.RawExtension `json:"object,omitempty"`
 	EmptyObject      runtime.RawExtension `json:"emptyObject,omitempty"`
@@ -47,7 +50,7 @@ type ObjectTest struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ObjectTestExternal struct {
-	runtime.TypeMeta `yaml:",inline" json:",inline"`
+	runtime.TypeMeta `yaml:",inline" json:""`
 
 	ID    string                 `json:"id,omitempty"`
 	Items []runtime.RawExtension `json:"items,omitempty"`
@@ -55,49 +58,49 @@ type ObjectTestExternal struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type InternalSimple struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	TestString       string `json:"testString"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExternalSimple struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	TestString       string `json:"testString"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExtensionA struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	TestString       string `json:"testString"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExtensionB struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	TestString       string `json:"testString"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExternalExtensionType struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	Extension        runtime.RawExtension `json:"extension"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type InternalExtensionType struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	Extension        runtime.Object `json:"extension"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExternalOptionalExtensionType struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	Extension        runtime.RawExtension `json:"extension,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type InternalOptionalExtensionType struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	Extension        runtime.Object `json:"extension,omitempty"`
 }
 
@@ -113,7 +116,7 @@ type InternalComplex struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExternalComplex struct {
-	runtime.TypeMeta `json:",inline"`
+	runtime.TypeMeta `json:""`
 	String           string `json:"string" description:"testing"`
 	Integer          int    `json:"int"`
 	Integer64        int64  `json:",omitempty"`
@@ -133,7 +136,7 @@ type MyWeirdCustomEmbeddedVersionKindField struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type TestType1 struct {
-	MyWeirdCustomEmbeddedVersionKindField `json:",inline"`
+	MyWeirdCustomEmbeddedVersionKindField `json:""`
 	A                                     string               `json:"A,omitempty"`
 	B                                     int                  `json:"B,omitempty"`
 	C                                     int8                 `json:"C,omitempty"`
@@ -166,7 +169,7 @@ type ExternalTestType2 struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExternalTestType1 struct {
-	MyWeirdCustomEmbeddedVersionKindField `json:",inline"`
+	MyWeirdCustomEmbeddedVersionKindField `json:""`
 	A                                     string                       `json:"A,omitempty"`
 	B                                     int                          `json:"B,omitempty"`
 	C                                     int8                         `json:"C,omitempty"`
@@ -187,19 +190,19 @@ type ExternalTestType1 struct {
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ExternalInternalSame struct {
-	MyWeirdCustomEmbeddedVersionKindField `json:",inline"`
+	MyWeirdCustomEmbeddedVersionKindField `json:""`
 	A                                     TestType2 `json:"A,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type UnversionedType struct {
-	MyWeirdCustomEmbeddedVersionKindField `json:",inline"`
+	MyWeirdCustomEmbeddedVersionKindField `json:""`
 	A                                     string `json:"A,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type UnknownType struct {
-	MyWeirdCustomEmbeddedVersionKindField `json:",inline"`
+	MyWeirdCustomEmbeddedVersionKindField `json:""`
 	A                                     string `json:"A,omitempty"`
 }
 
@@ -213,3 +216,121 @@ func (obj *MyWeirdCustomEmbeddedVersionKindField) GroupVersionKind() schema.Grou
 
 func (obj *TestType2) GetObjectKind() schema.ObjectKind         { return schema.EmptyObjectKind }
 func (obj *ExternalTestType2) GetObjectKind() schema.ObjectKind { return schema.EmptyObjectKind }
+
+// +k8s:deepcopy-gen=false
+type Unstructured struct {
+	// Object is a JSON compatible map with string, float, int, bool, []interface{}, or
+	// map[string]interface{}
+	// children.
+	Object map[string]interface{}
+}
+
+var _ runtime.Unstructured = &Unstructured{}
+
+func (obj *Unstructured) GetObjectKind() schema.ObjectKind { return obj }
+
+func (obj *Unstructured) IsList() bool {
+	if obj.Object != nil {
+		_, ok := obj.Object["items"]
+		return ok
+	}
+	return false
+}
+
+func (obj *Unstructured) EachListItem(fn func(runtime.Object) error) error {
+	if obj.Object == nil {
+		return fmt.Errorf("content is not a list")
+	}
+	field, ok := obj.Object["items"]
+	if !ok {
+		return fmt.Errorf("content is not a list")
+	}
+	items, ok := field.([]interface{})
+	if !ok {
+		return nil
+	}
+	for _, item := range items {
+		child, ok := item.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("items member is not an object")
+		}
+		if err := fn(&Unstructured{Object: child}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (obj *Unstructured) EachListItemWithAlloc(fn func(runtime.Object) error) error {
+	// EachListItem has allocated a new Object for the user, we can use it directly.
+	return obj.EachListItem(fn)
+}
+
+func (obj *Unstructured) NewEmptyInstance() runtime.Unstructured {
+	out := new(Unstructured)
+	if obj != nil {
+		out.SetGroupVersionKind(obj.GroupVersionKind())
+	}
+	return out
+}
+
+func (obj *Unstructured) UnstructuredContent() map[string]interface{} {
+	if obj.Object == nil {
+		return make(map[string]interface{})
+	}
+	return obj.Object
+}
+
+func (obj *Unstructured) SetUnstructuredContent(content map[string]interface{}) {
+	obj.Object = content
+}
+
+// MarshalJSON ensures that the unstructured object produces proper
+// JSON when passed to Go's standard JSON library.
+func (u *Unstructured) MarshalJSON() ([]byte, error) {
+	return json.Marshal(u.Object)
+}
+
+// UnmarshalJSON ensures that the unstructured object properly decodes
+// JSON when passed to Go's standard JSON library.
+func (u *Unstructured) UnmarshalJSON(b []byte) error {
+	return json.Unmarshal(b, &u.Object)
+}
+
+func (in *Unstructured) DeepCopyObject() runtime.Object {
+	return in.DeepCopy()
+}
+
+func (in *Unstructured) DeepCopy() *Unstructured {
+	if in == nil {
+		return nil
+	}
+	out := new(Unstructured)
+	*out = *in
+	out.Object = runtime.DeepCopyJSON(in.Object)
+	return out
+}
+
+func (u *Unstructured) GroupVersionKind() schema.GroupVersionKind {
+	apiVersion, ok := u.Object["apiVersion"].(string)
+	if !ok {
+		return schema.GroupVersionKind{}
+	}
+	gv, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return schema.GroupVersionKind{}
+	}
+	kind, ok := u.Object["kind"].(string)
+	if ok {
+		return gv.WithKind(kind)
+	}
+	return schema.GroupVersionKind{}
+}
+
+func (u *Unstructured) SetGroupVersionKind(gvk schema.GroupVersionKind) {
+	if u.Object == nil {
+		u.Object = make(map[string]interface{})
+	}
+	u.Object["apiVersion"] = gvk.GroupVersion().String()
+	u.Object["kind"] = gvk.Kind
+}

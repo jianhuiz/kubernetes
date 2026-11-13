@@ -17,28 +17,43 @@ limitations under the License.
 package main
 
 import (
-	"path/filepath"
+	"flag"
 
+	"github.com/spf13/pflag"
+	"k8s.io/code-generator/cmd/lister-gen/args"
 	"k8s.io/code-generator/cmd/lister-gen/generators"
-	"k8s.io/gengo/args"
-
-	"github.com/golang/glog"
+	"k8s.io/code-generator/pkg/util"
+	"k8s.io/gengo/v2"
+	"k8s.io/gengo/v2/generator"
+	"k8s.io/klog/v2"
 )
 
 func main() {
-	arguments := args.Default()
+	klog.InitFlags(nil)
+	args := args.New()
 
-	// Override defaults.
-	arguments.GoHeaderFilePath = filepath.Join(args.DefaultSourceTree(), "k8s.io/kubernetes/hack/boilerplate/boilerplate.go.txt")
-	arguments.OutputPackagePath = "k8s.io/kubernetes/pkg/client/listers"
+	args.AddFlags(pflag.CommandLine)
+	flag.Set("logtostderr", "true")
+	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+	pflag.Parse()
+
+	if err := args.Validate(); err != nil {
+		klog.Fatalf("Error: %v", err)
+	}
+
+	myTargets := func(context *generator.Context) []generator.Target {
+		return generators.GetTargets(context, args)
+	}
 
 	// Run it.
-	if err := arguments.Execute(
-		generators.NameSystems(),
+	if err := gengo.Execute(
+		generators.NameSystems(util.PluralExceptionListToMapOrDie(args.PluralExceptions)),
 		generators.DefaultNameSystem(),
-		generators.Packages,
+		myTargets,
+		gengo.StdBuildTag,
+		pflag.Args(),
 	); err != nil {
-		glog.Fatalf("Error: %v", err)
+		klog.Fatalf("Error: %v", err)
 	}
-	glog.V(2).Info("Completed successfully.")
+	klog.V(2).Info("Completed successfully.")
 }

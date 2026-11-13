@@ -24,10 +24,11 @@ import (
 
 const (
 	maxRangeTestCount = 500
+	testStringLength  = 32
 )
 
 func TestString(t *testing.T) {
-	valid := "0123456789abcdefghijklmnopqrstuvwxyz"
+	valid := "bcdfghjklmnpqrstvwxz2456789"
 	for _, l := range []int{0, 1, 2, 10, 123} {
 		s := String(l)
 		if len(s) != l {
@@ -35,7 +36,7 @@ func TestString(t *testing.T) {
 		}
 		for _, c := range s {
 			if !strings.ContainsRune(valid, c) {
-				t.Errorf("expected valid charaters, got %v", c)
+				t.Errorf("expected valid characters, got %v", c)
 			}
 		}
 	}
@@ -64,10 +65,10 @@ func TestIntn(t *testing.T) {
 
 func TestPerm(t *testing.T) {
 	Seed(5)
-	rand.Seed(5)
+	r := rand.New(rand.NewSource(5))
 	for i := 1; i < 20; i++ {
 		actual := Perm(i)
-		expected := rand.Perm(i)
+		expected := r.Perm(i)
 		for j := 0; j < i; j++ {
 			if actual[j] != expected[j] {
 				t.Errorf("Perm call result is unexpected")
@@ -97,5 +98,17 @@ func TestInt63nRange(t *testing.T) {
 				t.Errorf("%v out of range (%v,%v)", inrange, min, max)
 			}
 		}
+	}
+}
+
+func BenchmarkRandomStringGeneration(b *testing.B) {
+	b.ResetTimer()
+	var s string
+	for i := 0; i < b.N; i++ {
+		s = String(testStringLength)
+	}
+	b.StopTimer()
+	if len(s) == 0 {
+		b.Fatal(s)
 	}
 }

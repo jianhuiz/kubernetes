@@ -41,11 +41,19 @@ var (
 	AddToScheme        = localSchemeBuilder.AddToScheme
 )
 
-// Adds the list of known types to api.Scheme.
+// Adds the list of known types to the given scheme.
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
+		&Ingress{},
+		&IngressList{},
+		&IngressClass{},
+		&IngressClassList{},
 		&NetworkPolicy{},
 		&NetworkPolicyList{},
+		&IPAddress{},
+		&IPAddressList{},
+		&ServiceCIDR{},
+		&ServiceCIDRList{},
 	)
 
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)

@@ -24,12 +24,15 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
-	etcdtesting "k8s.io/apiserver/pkg/storage/etcd/testing"
+	genericregistrytest "k8s.io/apiserver/pkg/registry/generic/testing"
+	"k8s.io/apiserver/pkg/registry/rest"
+	etcd3testing "k8s.io/apiserver/pkg/storage/etcd3/testing"
 	"k8s.io/kubernetes/pkg/apis/scheduling"
+	schedulingapiv1 "k8s.io/kubernetes/pkg/apis/scheduling/v1"
 	"k8s.io/kubernetes/pkg/registry/registrytest"
 )
 
-func newStorage(t *testing.T) (*REST, *etcdtesting.EtcdTestServer) {
+func newStorage(t *testing.T) (*REST, *etcd3testing.EtcdTestServer) {
 	etcdStorage, server := registrytest.NewEtcdStorage(t, scheduling.GroupName)
 	restOptions := generic.RESTOptions{
 		StorageConfig:           etcdStorage,
@@ -37,7 +40,11 @@ func newStorage(t *testing.T) (*REST, *etcdtesting.EtcdTestServer) {
 		DeleteCollectionWorkers: 1,
 		ResourcePrefix:          "priorityclasses",
 	}
-	return NewREST(restOptions), server
+	rest, err := NewREST(restOptions)
+	if err != nil {
+		t.Fatalf("unable to create REST %v", err)
+	}
+	return rest, server
 }
 
 func validNewPriorityClass() *scheduling.PriorityClass {
@@ -55,7 +62,7 @@ func TestCreate(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestCreate(
 		validNewPriorityClass(),
 		// invalid cases
@@ -74,7 +81,7 @@ func TestUpdate(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestUpdate(
 		// valid
 		validNewPriorityClass(),
@@ -100,15 +107,35 @@ func TestDelete(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestDelete(validNewPriorityClass())
+}
+
+// TestDeleteSystemPriorityClass checks that system priority classes cannot be deleted.
+func TestDeleteSystemPriorityClass(t *testing.T) {
+	storage, server := newStorage(t)
+	defer server.Terminate(t)
+	defer storage.Store.DestroyFunc()
+	key := "/priorityclasses/test/system-node-critical"
+	ctx := genericregistrytest.NewClusterScopeContext(storage.Store)
+	pc := schedulingapiv1.SystemPriorityClasses()[0]
+	internalPc := &scheduling.PriorityClass{}
+	if err := schedulingapiv1.Convert_v1_PriorityClass_To_scheduling_PriorityClass(pc, internalPc, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.Store.Storage.Create(ctx, key, internalPc, nil, 0, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, _, err := storage.Delete(ctx, pc.Name, rest.ValidateAllObjectFunc, nil); err == nil {
+		t.Error("expected to receive an error")
+	}
 }
 
 func TestGet(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestGet(validNewPriorityClass())
 }
 
@@ -116,7 +143,7 @@ func TestList(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestList(validNewPriorityClass())
 }
 
@@ -124,7 +151,7 @@ func TestWatch(t *testing.T) {
 	storage, server := newStorage(t)
 	defer server.Terminate(t)
 	defer storage.Store.DestroyFunc()
-	test := registrytest.New(t, storage.Store).ClusterScope()
+	test := genericregistrytest.New(t, storage.Store).ClusterScope()
 	test.TestWatch(
 		validNewPriorityClass(),
 		// matching labels

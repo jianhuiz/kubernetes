@@ -14,7 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// +k8s:deepcopy-gen=package,register
+// +k8s:deepcopy-gen=package
+// +k8s:protobuf-gen=package
 // +k8s:openapi-gen=true
+// +k8s:prerelease-lifecycle-gen=true
+// +k8s:openapi-model-package=io.k8s.api.networking.v1
+
 // +groupName=networking.k8s.io
-package v1 // import "k8s.io/api/networking/v1"
+
+package v1

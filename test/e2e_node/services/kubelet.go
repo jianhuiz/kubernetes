@@ -17,21 +17,31 @@ limitations under the License.
 package services
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
-	"github.com/golang/glog"
+	cliflag "k8s.io/component-base/cli/flag"
+	"k8s.io/klog/v2"
+	kubeletconfigv1beta1 "k8s.io/kubelet/config/v1beta1"
 
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/kubernetes/pkg/features"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/kubernetes/cmd/kubelet/app/options"
+	"k8s.io/kubernetes/pkg/cluster/ports"
+	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
+	"k8s.io/kubernetes/pkg/kubelet/kubeletconfig/configfiles"
+	kubeletconfigcodec "k8s.io/kubernetes/pkg/kubelet/kubeletconfig/util/codec"
+	utilfs "k8s.io/kubernetes/pkg/util/filesystem"
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e_node/builder"
+	"k8s.io/kubernetes/test/e2e_node/remote"
 )
 
 // TODO(random-liu): Replace this with standard kubelet launcher.
@@ -46,12 +56,6 @@ func (a *args) String() string {
 
 // Set function of flag.Value
 func (a *args) Set(value string) error {
-	// Someone else is calling flag.Parse after the flags are parsed in the
-	// test framework. Use this to avoid the flag being parsed twice.
-	// TODO(random-liu): Figure out who is parsing the flags.
-	if flag.Parsed() {
-		return nil
-	}
 	// Note that we assume all white space in flag string is separating fields
 	na := strings.Fields(value)
 	*a = append(*a, na...)
@@ -60,62 +64,161 @@ func (a *args) Set(value string) error {
 
 // kubeletArgs is the override kubelet args specified by the test runner.
 var kubeletArgs args
+var kubeletConfigFile = "./kubeletconfig.yaml"
 
 func init() {
-	flag.Var(&kubeletArgs, "kubelet-flags", "Kubelet flags passed to kubelet, this will override default kubelet flags in the test. Flags specified in multiple kubelet-flags will be concatenate.")
+	flag.Var(&kubeletArgs, "kubelet-flags", "Kubelet flags passed to kubelet, this will override default kubelet flags in the test. Flags specified in multiple kubelet-flags will be concatenate. Deprecated, see: --kubelet-config-file.")
+	if flag.Lookup("kubelet-config-file") == nil {
+		flag.StringVar(&kubeletConfigFile, "kubelet-config-file", kubeletConfigFile, "The base KubeletConfiguration to use when setting up the kubelet. This configuration will then be minimially modified to support requirements from the test suite.")
+	}
 }
 
 // RunKubelet starts kubelet and waits for termination signal. Once receives the
 // termination signal, it will stop the kubelet gracefully.
-func RunKubelet() {
+func RunKubelet(ctx context.Context, featureGates map[string]bool) {
 	var err error
 	// Enable monitorParent to make sure kubelet will receive termination signal
 	// when test process exits.
 	e := NewE2EServices(true /* monitorParent */)
 	defer e.Stop()
-	e.kubelet, err = e.startKubelet()
+	e.kubelet, err = e.startKubelet(ctx, featureGates)
 	if err != nil {
-		glog.Fatalf("Failed to start kubelet: %v", err)
+		klog.Fatalf("Failed to start kubelet: %v", err)
 	}
 	// Wait until receiving a termination signal.
 	waitForTerminationSignal()
 }
 
 const (
-	// Ports of different e2e services.
-	kubeletPort          = "10250"
-	kubeletReadOnlyPort  = "10255"
-	kubeletRootDirectory = "/var/lib/kubelet"
-	// Health check url of kubelet
-	kubeletHealthCheckURL = "http://127.0.0.1:" + kubeletReadOnlyPort + "/healthz"
+	// KubeletRootDirectory specifies the directory where the kubelet runtime information is stored.
+	KubeletRootDirectory = "/var/lib/kubelet"
 )
+
+// Health check url of kubelet
+var kubeletHealthCheckURL = fmt.Sprintf("http://127.0.0.1:%d/healthz", ports.KubeletHealthzPort)
+
+func baseKubeConfiguration(ctx context.Context, cfgPath string) (*kubeletconfig.KubeletConfiguration, error) {
+	cfgPath, err := filepath.Abs(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = os.Stat(cfgPath)
+	if err != nil {
+		// If the kubeletconfig exists, but for some reason we can't read it, then
+		// return an error to avoid silently skipping it.
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+
+		// If the kubeletconfig file doesn't exist, then use a default configuration
+		// as the base.
+		kc, err := options.NewKubeletConfiguration()
+		if err != nil {
+			return nil, err
+		}
+
+		// The following values should match the contents of
+		// test/e2e_node/jenkins/default-kubelet-config.yaml. We can't use go embed
+		// here to fallback as default config lives in a parallel directory.
+		// TODO(endocrimes): Remove fallback for lack of kubelet config when all
+		//                   uses of e2e_node switch to providing one (or move to
+		//                   kubetest2 and pick up the default).
+		kc.CgroupRoot = "/"
+		kc.VolumeStatsAggPeriod = metav1.Duration{Duration: 10 * time.Second}
+		kc.SerializeImagePulls = false
+		kc.FileCheckFrequency = metav1.Duration{Duration: 10 * time.Second}
+		kc.PodCIDR = "10.100.0.0/24"
+		kc.EvictionPressureTransitionPeriod = metav1.Duration{Duration: 30 * time.Second}
+		kc.EvictionHard = map[string]string{
+			"memory.available":  "250Mi",
+			"nodefs.available":  "10%",
+			"nodefs.inodesFree": "5%",
+		}
+		kc.EvictionMinimumReclaim = map[string]string{
+			"nodefs.available":  "5%",
+			"nodefs.inodesFree": "5%",
+		}
+
+		return kc, nil
+	}
+
+	loader, err := configfiles.NewFsLoader(&utilfs.DefaultFs{}, cfgPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return loader.Load(ctx)
+}
 
 // startKubelet starts the Kubelet in a separate process or returns an error
 // if the Kubelet fails to start.
-func (e *E2EServices) startKubelet() (*server, error) {
-	glog.Info("Starting kubelet")
+func (e *E2EServices) startKubelet(ctx context.Context, featureGates map[string]bool) (*server, error) {
+	klog.Info("Starting kubelet")
 
-	// set feature gates so we can check which features are enabled and pass the appropriate flags
-	utilfeature.DefaultFeatureGate.Set(framework.TestContext.FeatureGates)
+	framework.Logf("Standalone mode: %v", framework.TestContext.StandaloneMode)
 
-	// Build kubeconfig
-	kubeconfigPath, err := createKubeconfigCWD()
+	var kubeconfigPath string
+
+	if !framework.TestContext.StandaloneMode {
+		var err error
+		// Build kubeconfig
+		kubeconfigPath, err = createKubeconfigCWD()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// KubeletConfiguration file path
+	kubeletConfigPath, err := kubeletConfigCWDPath()
 	if err != nil {
 		return nil, err
 	}
 
-	// Create pod manifest path
-	manifestPath, err := createPodManifestDirectory()
+	// KubeletDropInConfiguration directory path
+	framework.TestContext.KubeletConfigDropinDir, err = KubeletConfigDirCWDDir()
 	if err != nil {
 		return nil, err
 	}
-	e.rmDirs = append(e.rmDirs, manifestPath)
-	err = createRootDirectory(kubeletRootDirectory)
+
+	// Create pod directory
+	podPath, err := createPodDirectory()
 	if err != nil {
 		return nil, err
 	}
+	e.rmDirs = append(e.rmDirs, podPath)
+	err = createRootDirectory(KubeletRootDirectory)
+	if err != nil {
+		return nil, err
+	}
+
+	lookup := flag.Lookup("kubelet-config-file")
+	if lookup != nil {
+		kubeletConfigFile = lookup.Value.String()
+	}
+	kc, err := baseKubeConfiguration(ctx, kubeletConfigFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load base kubelet configuration: %w", err)
+	}
+
+	// Apply overrides to allow access to the Kubelet API from the test suite.
+	// These are insecure and should generally not be used outside of test infra.
+
+	// --anonymous-auth
+	kc.Authentication.Anonymous.Enabled = true
+	// --authentication-token-webhook
+	kc.Authentication.Webhook.Enabled = false
+	// --authorization-mode
+	kc.Authorization.Mode = kubeletconfig.KubeletAuthorizationModeAlwaysAllow
+	// --read-only-port
+	kc.ReadOnlyPort = ports.KubeletReadOnlyPort
+
+	// Static Pods are in a per-test location, so we override them for tests.
+	kc.StaticPodPath = podPath
+
 	var killCommand, restartCommand *exec.Cmd
 	var isSystemd bool
+	var unitName string
 	// Apply default kubelet flags.
 	cmdArgs := []string{}
 	if systemdRun, err := exec.LookPath("systemd-run"); err == nil {
@@ -124,82 +227,89 @@ func (e *E2EServices) startKubelet() (*server, error) {
 		// Since kubelet will typically be run as a service it also makes more
 		// sense to test it that way
 		isSystemd = true
-		unitName := fmt.Sprintf("kubelet-%d.service", rand.Int31())
-		cmdArgs = append(cmdArgs, systemdRun, "--unit="+unitName, "--slice=runtime.slice", "--remain-after-exit", builder.GetKubeletServerBin())
+
+		// If we are running on systemd >=240, we can append to the
+		// same log file on restarts
+		logLocation := "StandardError=file:"
+		if version, verr := exec.Command("systemd-run", "--version").Output(); verr == nil {
+			// sample output from $ systemd-run --version
+			// systemd 245 (245.4-4ubuntu3.13)
+			re := regexp.MustCompile(`systemd (\d+)`)
+			if match := re.FindSubmatch(version); len(match) > 1 {
+				num, _ := strconv.Atoi(string(match[1]))
+				if num >= 240 {
+					logLocation = "StandardError=append:"
+				}
+			}
+		}
+		// We can ignore errors, to have GetTimestampFromWorkspaceDir() fallback
+		// to the current time.
+		cwd, _ := os.Getwd()
+		// Use the timestamp from the current directory to name the systemd unit.
+		unitTimestamp := remote.GetTimestampFromWorkspaceDir(cwd)
+		unitName = fmt.Sprintf("kubelet-%s.service", unitTimestamp)
+		cmdArgs = append(cmdArgs,
+			systemdRun,
+			"-p", "Delegate=true",
+			"-p", logLocation+framework.TestContext.ReportDir+"/kubelet.log",
+			"--unit="+unitName,
+			"--slice=runtime.slice",
+			"--remain-after-exit",
+			builder.GetKubeletServerBin())
+
 		killCommand = exec.Command("systemctl", "kill", unitName)
 		restartCommand = exec.Command("systemctl", "restart", unitName)
-		e.logFiles["kubelet.log"] = logFileData{
-			journalctlCommand: []string{"-u", unitName},
-		}
-		cmdArgs = append(cmdArgs,
-			"--kubelet-cgroups=/kubelet.slice",
-			"--cgroup-root=/",
-		)
+
+		kc.KubeletCgroups = "/kubelet.slice"
 	} else {
 		cmdArgs = append(cmdArgs, builder.GetKubeletServerBin())
+		// TODO(random-liu): Get rid of this docker specific thing.
+		cmdArgs = append(cmdArgs, "--runtime-cgroups=/docker-daemon")
+
+		kc.KubeletCgroups = "/kubelet"
+
+		kc.SystemCgroups = "/system"
+	}
+
+	if !framework.TestContext.StandaloneMode {
 		cmdArgs = append(cmdArgs,
-			"--runtime-cgroups=/docker-daemon",
-			"--kubelet-cgroups=/kubelet",
-			"--cgroup-root=/",
-			"--system-cgroups=/system",
+			"--kubeconfig", kubeconfigPath,
 		)
 	}
+
 	cmdArgs = append(cmdArgs,
-		"--kubeconfig", kubeconfigPath,
-		"--address", "0.0.0.0",
-		"--port", kubeletPort,
-		"--read-only-port", kubeletReadOnlyPort,
-		"--root-dir", kubeletRootDirectory,
-		"--volume-stats-agg-period", "10s", // Aggregate volumes frequently so tests don't need to wait as long
-		"--allow-privileged", "true",
-		"--serialize-image-pulls", "false",
-		"--pod-manifest-path", manifestPath,
-		"--file-check-frequency", "10s", // Check file frequently so tests won't wait too long
-		"--docker-disable-shared-pid=false",
-		// Assign a fixed CIDR to the node because there is no node controller.
-		//
-		// Note: this MUST be in sync with with the IP in
-		// - cluster/gce/config-test.sh and
-		// - test/e2e_node/conformance/run_test.sh.
-		"--pod-cidr", "10.100.0.0/24",
-		"--eviction-pressure-transition-period", "30s",
-		// Apply test framework feature gates by default. This could also be overridden
-		// by kubelet-flags.
-		"--feature-gates", framework.TestContext.FeatureGates,
-		"--eviction-hard", "memory.available<250Mi,nodefs.available<10%,nodefs.inodesFree<5%", // The hard eviction thresholds.
-		"--eviction-minimum-reclaim", "nodefs.available=5%,nodefs.inodesFree=5%", // The minimum reclaimed resources after eviction.
-		"--v", LOG_VERBOSITY_LEVEL, "--logtostderr",
+		"--root-dir", KubeletRootDirectory,
+		"--v", LogVerbosityLevel,
 	)
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.DynamicKubeletConfig) {
-		// Enable dynamic config if the feature gate is enabled
-		dynamicConfigDir, err := getDynamicConfigDir()
-		if err != nil {
-			return nil, err
-		}
-		cmdArgs = append(cmdArgs, "--dynamic-config-dir", dynamicConfigDir)
+	// Apply test framework feature gates by default. This could also be overridden
+	// by kubelet-flags.
+	if len(featureGates) > 0 {
+		cmdArgs = append(cmdArgs, "--feature-gates", cliflag.NewMapStringBool(&featureGates).String())
+		kc.FeatureGates = featureGates
 	}
 
-	// Enable kubenet by default.
-	cniBinDir, err := getCNIBinDirectory()
-	if err != nil {
-		return nil, err
-	}
-
-	cniConfDir, err := getCNIConfDirectory()
-	if err != nil {
-		return nil, err
-	}
-
-	cmdArgs = append(cmdArgs,
-		"--network-plugin=kubenet",
-		"--cni-bin-dir", cniBinDir,
-		"--cni-conf-dir", cniConfDir)
+	// Add the KubeletDropinConfigDirectory flag if set.
+	cmdArgs = append(cmdArgs, "--config-dir", framework.TestContext.KubeletConfigDropinDir)
 
 	// Keep hostname override for convenience.
 	if framework.TestContext.NodeName != "" { // If node name is specified, set hostname override.
 		cmdArgs = append(cmdArgs, "--hostname-override", framework.TestContext.NodeName)
 	}
+
+	if framework.TestContext.ContainerRuntimeEndpoint != "" {
+		cmdArgs = append(cmdArgs, "--container-runtime-endpoint", framework.TestContext.ContainerRuntimeEndpoint)
+	}
+
+	if framework.TestContext.ImageServiceEndpoint != "" {
+		cmdArgs = append(cmdArgs, "--image-service-endpoint", framework.TestContext.ImageServiceEndpoint)
+	}
+
+	if err := WriteKubeletConfigFile(kc, kubeletConfigPath); err != nil {
+		return nil, err
+	}
+	// add the flag to load config from a file
+	cmdArgs = append(cmdArgs, "--config", kubeletConfigPath)
 
 	// Override the default kubelet flags.
 	cmdArgs = append(cmdArgs, kubeletArgs...)
@@ -210,6 +320,7 @@ func (e *E2EServices) startKubelet() (*server, error) {
 	}
 
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	restartOnExit := framework.TestContext.RestartKubelet
 	server := newServer(
 		"kubelet",
 		cmd,
@@ -218,32 +329,53 @@ func (e *E2EServices) startKubelet() (*server, error) {
 		[]string{kubeletHealthCheckURL},
 		"kubelet.log",
 		e.monitorParent,
-		true /* restartOnExit */)
+		restartOnExit,
+		unitName)
 	return server, server.start()
 }
 
-// createPodManifestDirectory creates pod manifest directory.
-func createPodManifestDirectory() (string, error) {
+// WriteKubeletConfigFile writes the kubelet config file based on the args and returns the filename
+func WriteKubeletConfigFile(internal *kubeletconfig.KubeletConfiguration, path string) error {
+	data, err := kubeletconfigcodec.EncodeKubeletConfig(internal, kubeletconfigv1beta1.SchemeGroupVersion)
+	if err != nil {
+		return err
+	}
+	// create the directory, if it does not exist
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	// write the file
+	if err := os.WriteFile(path, data, 0755); err != nil {
+		return err
+	}
+	return nil
+}
+
+// createPodDirectory creates pod directory.
+func createPodDirectory() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("failed to get current working directory: %v", err)
+		return "", fmt.Errorf("failed to get current working directory: %w", err)
 	}
-	path, err := ioutil.TempDir(cwd, "pod-manifest")
+	path, err := os.MkdirTemp(cwd, "static-pods")
 	if err != nil {
-		return "", fmt.Errorf("failed to create static pod manifest directory: %v", err)
+		return "", fmt.Errorf("failed to create static pod directory: %w", err)
 	}
 	return path, nil
 }
 
 // createKubeconfig creates a kubeconfig file at the fully qualified `path`. The parent dirs must exist.
 func createKubeconfig(path string) error {
-	kubeconfig := []byte(`apiVersion: v1
+	kubeconfig := []byte(fmt.Sprintf(`apiVersion: v1
 kind: Config
 users:
 - name: kubelet
+  user:
+    token: %s
 clusters:
 - cluster:
-    server: ` + getAPIServerClientURL() + `
+    server: %s
     insecure-skip-tls-verify: true
   name: local
 contexts:
@@ -251,9 +383,9 @@ contexts:
     cluster: local
     user: kubelet
   name: local-context
-current-context: local-context`)
+current-context: local-context`, framework.TestContext.BearerToken, getAPIServerClientURL()))
 
-	if err := ioutil.WriteFile(path, kubeconfig, 0666); err != nil {
+	if err := os.WriteFile(path, kubeconfig, 0666); err != nil {
 		return err
 	}
 	return nil
@@ -263,9 +395,8 @@ func createRootDirectory(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return os.MkdirAll(path, os.FileMode(0755))
-		} else {
-			return err
 		}
+		return err
 	}
 	return nil
 }
@@ -273,9 +404,30 @@ func createRootDirectory(path string) error {
 func kubeconfigCWDPath() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("failed to get current working directory: %v", err)
+		return "", fmt.Errorf("failed to get current working directory: %w", err)
 	}
 	return filepath.Join(cwd, "kubeconfig"), nil
+}
+
+func kubeletConfigCWDPath() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current working directory: %w", err)
+	}
+	// DO NOT name this file "kubelet" - you will overwrite the kubelet binary and be very confused :)
+	return filepath.Join(cwd, "kubelet-config"), nil
+}
+
+func KubeletConfigDirCWDDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current working directory: %w", err)
+	}
+	dir := filepath.Join(cwd, "kubelet.conf.d")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 // like createKubeconfig, but creates kubeconfig at current-working-directory/kubeconfig
@@ -290,33 +442,6 @@ func createKubeconfigCWD() (string, error) {
 		return "", err
 	}
 	return kubeconfigPath, nil
-}
-
-// getCNIBinDirectory returns CNI directory.
-func getCNIBinDirectory() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cwd, "cni", "bin"), nil
-}
-
-// getCNIConfDirectory returns CNI Configuration directory.
-func getCNIConfDirectory() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cwd, "cni", "net.d"), nil
-}
-
-// getDynamicConfigDir returns the directory for dynamic Kubelet configuration
-func getDynamicConfigDir() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cwd, "dynamic-kubelet-config"), nil
 }
 
 // adjustArgsForSystemd escape special characters in kubelet arguments for systemd. Systemd
